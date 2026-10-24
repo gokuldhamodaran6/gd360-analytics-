@@ -113,7 +113,7 @@ def daily_sessions(db: Session, workspace_id: str, lo: date, hi: date, by_countr
         dd = d if isinstance(d, date) else date.fromisoformat(str(d)[:10])
         if dd <= hi:
             out[dd] += n
-    return "GD360 website tracking", dict(out)
+    return "Euliv website tracking", dict(out)
 
 
 def lift(db: Session, i: models.Initiative) -> dict:
@@ -122,7 +122,7 @@ def lift(db: Session, i: models.Initiative) -> dict:
     s, e = _window(i)
     src, d = daily_sessions(db, i.workspace_id, s - timedelta(days=PRE_DAYS), e)
     if not d:
-        return {"state": "not_enough", "why": "No website sessions: connect GA4 or add the GD360 snippet to your site."}
+        return {"state": "not_enough", "why": "No website sessions: connect GA4 or add the Euliv snippet to your site."}
     days = sorted(set(d) | {s - timedelta(days=k) for k in range(1, PRE_DAYS + 1)} | {s + timedelta(days=k) for k in range((e - s).days + 1)})
     days = [x for x in days if x <= e]
     out = lift_from_series(days, [d.get(x, 0.0) for x in days], s, e)
@@ -253,7 +253,7 @@ def report_pdf(i: models.Initiative, payload: dict) -> bytes:
     for t in payload.get("targets") or []:
         rows.append([esc(t["label"]), "—" if t.get("actual") is None else f"{t['actual']:,.0f}" if t.get("unit") != "pct" else f"{t['actual']:g}%",
                      f"{t['target']:,.0f}" if t.get("target") is not None and t.get("unit") != "pct" else f"{t.get('target')}%",
-                     "—" if t.get("pct") is None else f"{t['pct']:g}%", esc({"counted": "Counted by GD360", "matched": "Matched evidence",
+                     "—" if t.get("pct") is None else f"{t['pct']:g}%", esc({"counted": "Counted by Euliv", "matched": "Matched evidence",
                                                                             "typed": "Typed by you"}.get(t.get("truth"), t.get("truth") or ""))])
     story += [Paragraph("Targets", h2)]
     tb = Table(rows, colWidths=[62 * mm, 22 * mm, 22 * mm, 20 * mm, 40 * mm], repeatRows=1)
@@ -275,7 +275,7 @@ def report_pdf(i: models.Initiative, payload: dict) -> bytes:
                                                                      f"in {pl.get('influenced_n', 0)} · won {pl.get('won', 0):,.0f} in {pl.get('won_n', 0)}. Matched by company name; truth: matched."), body)]
     if payload.get("learnings"):
         story += [Paragraph("Learnings", h2)] + [Paragraph("• " + esc(x), body) for x in payload["learnings"]]
-    story += [Spacer(1, 10), Paragraph(esc("Counted: GD360 counted it. Matched: read from a connected source and matched by the tracking contract. "
+    story += [Spacer(1, 10), Paragraph(esc("Counted: Euliv counted it. Matched: read from a connected source and matched by the tracking contract. "
                                            "Typed: entered by a person. Lift is shown as a finding only when its 90% range clears zero."), muted)]
     doc.build(story)
     return buf.getvalue()

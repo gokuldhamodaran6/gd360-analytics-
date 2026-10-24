@@ -146,7 +146,7 @@ def _read_site(site: dict) -> dict:
     from .. import ai_engine
     try:
         raw = ai_engine._call_llm_resilient([
-            {"role": "system", "content": "GD360 BUSINESS BRAIN. From the website text, reply with JSON only: "
+            {"role": "system", "content": "Euliv BUSINESS BRAIN. From the website text, reply with JSON only: "
                                           '{"about": "2 sentences on what the business does and for whom", "products": ["up to 6"], '
                                           '"voice": "how it writes, in a few words", "industry": "one of: ' + ", ".join(packs.PACKS) + '"}. '
                                           "Use only what the text says."},
@@ -230,11 +230,11 @@ def refresh(db: Session, workspace_id: str, website: str | None = None) -> model
                               "source": s["name"], "as_of": today})
     cust = bp.audiences.get("customers") or {}
     if cust.get("accounts"):
-        facts.append({"key": "gtm.accounts", "label": "Accounts in GD360", "value": cust["accounts"], "unit": "count", "source": "GD360 accounts", "as_of": today})
+        facts.append({"key": "gtm.accounts", "label": "Accounts in Euliv", "value": cust["accounts"], "unit": "count", "source": "Euliv accounts", "as_of": today})
     for kind, h in _history(db, workspace_id).items():
         for k, v in (h.get("averages") or {}).items():
             facts.append({"key": f"history.{kind}.{k}", "label": f"Average {k.replace('_', ' ')} of your past {kind}s ({h['count']})", "value": v,
-                          "unit": "pct" if k.endswith("rate") else "count", "source": f"{h['count']} past {kind}{'s' if h['count'] != 1 else ''} in GD360", "as_of": today})
+                          "unit": "pct" if k.endswith("rate") else "count", "source": f"{h['count']} past {kind}{'s' if h['count'] != 1 else ''} in Euliv", "as_of": today})
     bp.facts = facts
     ws = db.get(models.Workspace, workspace_id)
     kit = (ws.brand_kit if ws is not None else None) or {}

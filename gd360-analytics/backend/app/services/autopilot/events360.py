@@ -92,7 +92,7 @@ def webinar360(db: Session, i: models.Initiative) -> dict:
                      "cold": sum(1 for p in people if p["heat"] == "cold")},
             "people": people[:100], "cta_clicks": cta, "replay_views": replay, "questions": qs,
             "pipeline": {k: pipe.get(k) for k in ("sourced", "sourced_n", "influenced", "won")},
-            "truth": "counted (Zoom / Teams attendance, GD360 links), pipeline matched"}
+            "truth": "counted (Zoom / Teams attendance, Euliv links), pipeline matched"}
 
 
 def online(db: Session, i: models.Initiative) -> dict:

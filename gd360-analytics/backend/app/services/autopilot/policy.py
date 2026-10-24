@@ -125,7 +125,7 @@ def do(db: Session, a: models.AgentAction, by: str, auto: bool = False) -> model
                                       due_on=datetime.utcnow().date().isoformat(), auto_rule={"kind": "none"})
             db.add(t)
             db.flush()
-            a.undo, a.result = {"created_task_id": t.id}, "Decision recorded. GD360 can't change budgets inside the ad platforms - the move is a task."
+            a.undo, a.result = {"created_task_id": t.id}, "Decision recorded. Euliv can't change budgets inside the ad platforms - the move is a task."
         elif a.kind == "digest":
             a.result = p.get("result") or "Sent."
         else:

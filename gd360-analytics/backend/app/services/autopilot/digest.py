@@ -55,7 +55,7 @@ def build(db: Session, user: models.User, workspace_id: str) -> dict:
 def send(db: Session, bp: models.BusinessProfile, user: models.User, d: dict, post=requests.post) -> list[dict]:
     from ..automations import app_url, email_configured, send_email
     cur = bp.integrations or {}
-    text = f"GD360 morning digest\n\n" + "\n".join(f"• {x}" for x in d["lines"]) + f"\n\nOpen: {app_url()}/initiatives"
+    text = f"Euliv morning digest\n\n" + "\n".join(f"• {x}" for x in d["lines"]) + f"\n\nOpen: {app_url()}/initiatives"
     out = []
     to = cur.get("digest_email") or user.email
     if to and email_configured():

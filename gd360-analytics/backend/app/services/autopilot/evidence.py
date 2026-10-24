@@ -126,13 +126,13 @@ def scan(db: Session, i: models.Initiative, vision_budget: int = 6) -> dict:
     for l in tracking.link_stats(db, i):
         if l.get("kind") == "landing_page" and (l.get("visits") or 0) > 0:
             first = (l.get("tracking") or {}).get("first_seen") or (l.get("tracking") or {}).get("last_seen")
-            e, n = _upsert(db, i, existing, "page", "GD360", f"page:{l['id']}", 1.0, title=f"{l['label']} is live", url=l.get("url"),
+            e, n = _upsert(db, i, existing, "page", "Euliv", f"page:{l['id']}", 1.0, title=f"{l['label']} is live", url=l.get("url"),
                            numbers={"visits": l.get("visits"), "conversions": l.get("conversions")}, occurred_at=first if isinstance(first, datetime) else None,
-                           matched_by="counted", why="first visit recorded by the GD360 snippet")
+                           matched_by="counted", why="first visit recorded by the Euliv snippet")
             keep(e, n)
     for camp in db.query(models.GtmCampaign).filter(models.GtmCampaign.initiative_id == i.id, models.GtmCampaign.status == "sent"):
-        e, n = _upsert(db, i, existing, "email", "GD360", f"email:{camp.id}", 1.0, title=f"Email sent: {camp.name}", occurred_at=camp.sent_at,
-                       matched_by="counted", why="sent from GD360")
+        e, n = _upsert(db, i, existing, "email", "Euliv", f"email:{camp.id}", 1.0, title=f"Email sent: {camp.name}", occurred_at=camp.sent_at,
+                       matched_by="counted", why="sent from Euliv")
         keep(e, n)
     db.commit()
     review = db.query(models.InitiativeEvidence).filter(models.InitiativeEvidence.initiative_id == i.id, models.InitiativeEvidence.state == "review").count()

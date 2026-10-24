@@ -23,21 +23,21 @@ _STOP = {"the", "and", "for", "with", "our", "your", "a", "an", "of", "to", "in"
 
 # target key -> (truth, where it comes from)
 SOURCES = {
-    "registrations": ("counted", "GD360 registration page and imports"), "attended": ("counted", "GD360 check-in and Zoom"),
-    "attendance_rate": ("counted", "GD360 registrations and check-ins"), "walk_ins": ("counted", "GD360 walk-in capture"),
-    "meetings": ("counted", "GD360 meetings logged and HubSpot meetings"), "accounts_engaged": ("counted", "GD360 account signals"),
-    "tier_a_engaged": ("counted", "GD360 account signals"), "emails_sent": ("counted", "GD360 email"), "open_rate": ("counted", "GD360 email"),
-    "click_rate": ("counted", "GD360 email"), "web_visits": ("counted", "GD360 website tracking"), "newsletter_signups": ("counted", "GD360 forms"),
-    "opportunities": ("counted", "GD360 board and HubSpot deals"), "candidates": ("counted", "GD360 board"), "interviews": ("counted", "GD360 board"),
-    "offers": ("counted", "GD360 board"), "hires": ("counted", "GD360 board"), "items_shipped": ("counted", "GD360 board"),
-    "items_shipped_pct": ("counted", "GD360 board"), "tasks_done_pct": ("counted", "GD360 plan"), "landing_visits": ("counted", "GD360 landing pages"),
-    "landing_conversions": ("counted", "GD360 landing pages"), "link_clicks": ("counted", "GD360 short links"),
-    "approvals_done": ("counted", "GD360 approvals"), "invites_sent": ("counted", "GD360 invite emails and logged outreach"),
+    "registrations": ("counted", "Euliv registration page and imports"), "attended": ("counted", "Euliv check-in and Zoom"),
+    "attendance_rate": ("counted", "Euliv registrations and check-ins"), "walk_ins": ("counted", "Euliv walk-in capture"),
+    "meetings": ("counted", "Euliv meetings logged and HubSpot meetings"), "accounts_engaged": ("counted", "Euliv account signals"),
+    "tier_a_engaged": ("counted", "Euliv account signals"), "emails_sent": ("counted", "Euliv email"), "open_rate": ("counted", "Euliv email"),
+    "click_rate": ("counted", "Euliv email"), "web_visits": ("counted", "Euliv website tracking"), "newsletter_signups": ("counted", "Euliv forms"),
+    "opportunities": ("counted", "Euliv board and HubSpot deals"), "candidates": ("counted", "Euliv board"), "interviews": ("counted", "Euliv board"),
+    "offers": ("counted", "Euliv board"), "hires": ("counted", "Euliv board"), "items_shipped": ("counted", "Euliv board"),
+    "items_shipped_pct": ("counted", "Euliv board"), "tasks_done_pct": ("counted", "Euliv plan"), "landing_visits": ("counted", "Euliv landing pages"),
+    "landing_conversions": ("counted", "Euliv landing pages"), "link_clicks": ("counted", "Euliv short links"),
+    "approvals_done": ("counted", "Euliv approvals"), "invites_sent": ("counted", "Euliv invite emails and logged outreach"),
     "replies": ("counted", "logged outreach"), "reply_rate": ("counted", "logged outreach"),
     "social_reach": ("matched", "synced posts matched by the contract"), "social_engagements": ("matched", "synced posts matched by the contract"),
     "ad_spend": ("matched", "Meta / Google Ads campaigns named INIT-{code}"), "cost_per_lead": ("matched", "ad spend ÷ registrations or leads"),
     "utm_sessions": ("matched", "GA4 sessions with utm_campaign={utm}"), "pipeline_value": ("matched", "HubSpot deals at engaged companies"),
-    "revenue": ("matched", "HubSpot deals won at engaged companies"), "nps": ("counted", "GD360 survey"),
+    "revenue": ("matched", "HubSpot deals won at engaged companies"), "nps": ("counted", "Euliv survey"),
 }
 
 

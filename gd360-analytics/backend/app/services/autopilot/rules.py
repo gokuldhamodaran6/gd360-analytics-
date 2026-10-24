@@ -36,7 +36,7 @@ INFER = [
     ("sessions", r"\b(utm|traffic|drive visits)\b"),
 ]
 LABEL = {"page_live": "the landing page's first visit", "first_registration": "the first registration", "post": "a matched post",
-         "first_spend": "the first ad spend on INIT-{code}", "email_sent": "a GD360 email going out", "meeting": "a meeting logged",
+         "first_spend": "the first ad spend on INIT-{code}", "email_sent": "a Euliv email going out", "meeting": "a meeting logged",
          "deal": "a matched deal", "sessions": "sessions from the UTM campaign", "count": "{metric} reaching {n}", "none": "you or an approval"}
 GD360_PROVIDES = r"\b(build|create|set ?up|make)\b.{0,30}\b(registration (page|form)|sign-?up (page|form)|rsvp (page|form))\b"
 
@@ -68,8 +68,8 @@ def assign(db: Session, i: models.Initiative) -> int:
             n += 1
         if t.status != "done" and i.kind in ("event", "webinar") and re.search(GD360_PROVIDES, (t.title or "").lower()):
             t.status, t.completed_by, t.done_at = "done", "autopilot", datetime.utcnow()
-            t.evidence = (t.evidence or []) + [{"label": "GD360 registration page", "url": None, "kind": "auto", "added_at": datetime.utcnow().isoformat() + "Z"}]
-            t.auto_rule = {"kind": "none", "why": "GD360 provides the registration page"}
+            t.evidence = (t.evidence or []) + [{"label": "Euliv registration page", "url": None, "kind": "auto", "added_at": datetime.utcnow().isoformat() + "Z"}]
+            t.auto_rule = {"kind": "none", "why": "Euliv provides the registration page"}
     db.commit()
     return n
 
