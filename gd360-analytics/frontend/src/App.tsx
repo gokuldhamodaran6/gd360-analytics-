@@ -2,7 +2,9 @@ import { Navigate, Route, Routes, useLocation, useParams } from "react-router-do
 import { useAuth } from "./api/AuthContext";
 import Login from "./pages/Login";
 import AdminLogin from "./pages/AdminLogin";
-import MarketingHome from "./marketing/v2/Landing";
+// R59: the earlier landing page is back as the public homepage (Gokul's call); the R56 one stays at /new-landing
+import MarketingHome from "./marketing/pages/Home";
+import MarketingLandingV2 from "./marketing/v2/Landing";
 import MarketingPricing from "./marketing/v2/Pricing2";
 import MarketingAbout from "./marketing/pages/About";
 import MarketingStart from "./marketing/v2/Start2";
@@ -146,6 +148,7 @@ export default function App() {
       {/* 2026-10-09: the public website (approved "GD360 Website — Final"
           mockup). "Get started" is the new sign-up flow; /register opens it too. */}
       <Route path="/pricing" element={<MarketingPricing />} />
+      <Route path="/new-landing" element={<MarketingLandingV2 />} />
       <Route path="/about" element={<MarketingAbout />} />
       <Route path="/start" element={<MarketingStart />} />
       <Route path="/register" element={<MarketingStart />} />
