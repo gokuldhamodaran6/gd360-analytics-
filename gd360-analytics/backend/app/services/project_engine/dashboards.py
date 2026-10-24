@@ -65,7 +65,9 @@ def _kpis(analysis_type: str, summary: dict, facts: list[dict]) -> list[dict]:
                             "delta_pct": s.get("pct"),
                             "delta": pct["display"] if pct and pct.get("kind") == "percent" else None,
                             "delta_dir": None if s.get("pct") is None else ("down" if s["pct"] < 0 else "up"),
-                            "note": "latest vs first period"})
+                            # R60: say which period the number is ("$4.6M · latest vs first period" read as a change)
+                            "note": (f"{s.get('last_label')} · change vs {s.get('first_label')}" if pct and pct.get("kind") == "percent"
+                                     else f"{s.get('last_label')}, the latest period") if s.get("last_label") else "the latest period"})
     elif analysis_type == "forecast":
         # round 32: the forecast, its likely range, the last actual and how well the model tested
         return list((summary.get("forecast") or {}).get("kpis") or [])[:6]

@@ -70,6 +70,14 @@ Comparisons between two periods (explain_change):
   them, and include ad spend or budget tables as "context" when they may explain
   traffic changes.
 
+Year-over-year questions ("yoy", "year over year", "annual growth", "sales by year vs last
+year") that name no years: compare the latest year in the data with the year before as
+explain_change (same days of each year when the latest year is partial, and say so in
+"assumptions"), AND add one more step with the metric for EVERY year in the data - one row
+per year, columns year and the metric - so the person sees each year and its change, not
+only the last two. For the "series" of a comparison, return the metric BY MONTH with the
+period column (never one row per day: a year of days is too long to read as a chart).
+
 Questions with several parts ("which hotel performs best, in which year and month,
 and why"): give each part its own step (by hotel; by year and month; by the likely
 drivers such as channel, segment, price or cancellations). The analysis covers the

@@ -140,6 +140,51 @@ def table_payload(df: pd.DataFrame, limit: int = MAX_VISUAL_ROWS) -> dict:
     return {"columns": cols, "rows": rows, "truncated": len(df) > limit}
 
 
+_AVERAGE = re.compile(r"(rate|pct|percent|share|avg|average|mean|ratio|margin|per_|price|aov)", re.I)
+_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def chart_frame(df: pd.DataFrame, mode: str = "time", max_rows: int = 200) -> tuple[pd.DataFrame, str | None]:
+    """R60: a dated series too long to draw (731 days of "this year vs last year" fell back to a table) becomes a
+    monthly one: sums for amounts and counts, averages for rates and prices. mode "overlay" lays the years over one
+    January-to-December axis, one line per year - how a year-over-year comparison is read. The analysis itself
+    always uses every row; only the chart is rolled up. Returns (frame, "monthly") or (df, None) untouched."""
+    if df is None or len(df) <= max_rows:
+        return df, None
+    date_col = next((c for c in df.columns if _dtype(df[c]) == "date"), None)
+    if date_col is None:
+        return df, None
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        d = pd.to_datetime(df[date_col], errors="coerce", format="mixed")
+    if d.notna().mean() < 0.8:
+        return df, None
+    measures = [c for c in df.columns if c != date_col and pd.api.types.is_numeric_dtype(df[c])
+                and not (_ID_LIKE.search(str(c)) and pd.api.types.is_integer_dtype(df[c]))]
+    if not measures:
+        return df, None
+    dims = [c for c in df.columns if c not in measures and c != date_col and df[c].nunique(dropna=True) <= 6]
+    aggs = {m: ("mean" if _AVERAGE.search(str(m)) else "sum") for m in measures}
+    w = df.assign(_d=d).dropna(subset=["_d"])
+    years = w["_d"].dt.year
+    if mode == "overlay" and 2 <= years.nunique() <= 6:
+        w = w.assign(year=years.astype(str), _m=w["_d"].dt.month)
+        g = w.groupby(["year", "_m"], as_index=False).agg(aggs).sort_values(["year", "_m"])
+        g.insert(0, "month", g["_m"].map(lambda m: _MONTHS[int(m) - 1]))
+        return g[["month", "year"] + measures].reset_index(drop=True), "monthly"
+    w = w.assign(_p=w["_d"].dt.to_period("M").dt.start_time.dt.strftime("%Y-%m-%d"))
+    g = w.groupby(["_p"] + dims, as_index=False, dropna=False).agg(aggs).rename(columns={"_p": date_col})
+    return g.sort_values(date_col)[[date_col] + dims + measures].reset_index(drop=True), "monthly"
+
+
+def monthly_title(title: str) -> str:
+    """"Daily net sales YoY comparison" -> "Monthly net sales YoY comparison" once the chart is by month."""
+    t = re.sub(r"\bdaily\b", "Monthly", title, count=1, flags=re.I)
+    t = re.sub(r"\b(per|by|each) day\b", "by month", t, flags=re.I)
+    return t if t != title else f"{title} (by month)"
+
+
 class _Facts:
     def __init__(self, kind: str, currency: str | None, source_currency: str | None = None):
         self.items: list[dict] = []
@@ -337,9 +382,11 @@ def _explain_change(spec: dict, tables: dict, facts: _Facts) -> dict:
     series = spec.get("series") or {}
     sdf = tables.get(series.get("table"))
     if sdf is not None and len(sdf):
-        visuals.insert(0, {"type": "chart", "title": series.get("title") or f"{metric} over time",
+        cdf, rolled = chart_frame(sdf, "overlay")
+        title = series.get("title") or f"{metric} over time"
+        visuals.insert(0, {"type": "chart", "title": monthly_title(title) if rolled else title,
                            "chart_type": series.get("chart_type") or "line", "tables": [series.get("table")],
-                           **table_payload(sdf)})
+                           **table_payload(cdf)})
     return {"summary": summary, "visuals": visuals, "warnings": warnings}
 
 
@@ -442,8 +489,10 @@ def _trend(spec: dict, tables: dict, facts: _Facts) -> dict:
                                    "max": fmax["id"], "min": fmin["id"], "total": total["id"] if total else None},
                            "fact_ids": [f["id"] for f in (f1, f2, ch, fp, fmax, fmin, total) if f]})
     over = "over time" if real_dates or _TIME_WORD.search(str(tcol)) else f"by {present.humanize(tcol).lower()}"
-    visuals = [{"type": "chart", "title": spec.get("title") or f"{metric} {over}",
-                "chart_type": spec.get("chart_type") or "line", **present.annotate(table_payload(df), facts.currency)}]
+    cdf, rolled = chart_frame(df, "time")
+    title = spec.get("title") or f"{metric} {over}"
+    visuals = [{"type": "chart", "title": monthly_title(title) if rolled else title,
+                "chart_type": spec.get("chart_type") or "line", **present.annotate(table_payload(cdf), facts.currency)}]
     return {"summary": {"metric": metric, "series": series_out}, "visuals": visuals, "warnings": []}
 
 
