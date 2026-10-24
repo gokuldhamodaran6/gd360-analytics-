@@ -11,7 +11,7 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
-UA = "Mozilla/5.0 (compatible; GD360-EventOS/1.0; +https://gd360.ai)"
+UA = "Mozilla/5.0 (compatible; Euliv-EventOS/1.0; +https://gd360.ai)"
 
 
 class FetchError(Exception):
