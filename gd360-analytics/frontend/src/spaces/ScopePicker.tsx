@@ -78,7 +78,7 @@ export function scopeSummary(scope: Scope, sources: ProjectSource[] | null, spac
     const sp = (spaces || []).find((s) => s.id === scope.spaceId);
     if (sp) {
       const n = sp.sources.length;
-      return { label: `${sp.name} · ${n} ${n === 1 ? "source" : "sources"}`, color: sp.color, footer: `GD360 answers from ${sp.name} only.`, count: n };
+      return { label: `${sp.name} · ${n} ${n === 1 ? "source" : "sources"}`, color: sp.color, footer: `Euliv answers from ${sp.name} only.`, count: n };
     }
   }
   if (scope.kind === "sources") {
@@ -86,11 +86,11 @@ export function scopeSummary(scope: Scope, sources: ProjectSource[] | null, spac
     return {
       label: `${n} ${n === 1 ? "source" : "sources"} chosen`,
       color: PICKED_COLOR,
-      footer: n ? `GD360 will query only ${n === 1 ? "this source" : `these ${n} sources`}.` : "Pick at least one source.",
+      footer: n ? `Euliv will query only ${n === 1 ? "this source" : `these ${n} sources`}.` : "Pick at least one source.",
       count: n,
     };
   }
-  return { label: `Everything · ${all.length} ${all.length === 1 ? "source" : "sources"}`, color: ALL_COLOR, footer: "GD360 picks the right sources from everything you can see.", count: all.length };
+  return { label: `Everything · ${all.length} ${all.length === 1 ? "source" : "sources"}`, color: ALL_COLOR, footer: "Euliv picks the right sources from everything you can see.", count: all.length };
 }
 
 function LogoStack({ items }: { items: { kind: string; name: string }[] }) {
