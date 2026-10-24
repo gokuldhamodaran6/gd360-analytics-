@@ -254,7 +254,7 @@ const YES: Fit = { ok: true, why: null };
  *  disabled tile shows. */
 export function fits(shape: ChartShape, chartType: string): Fit {
   let ct = normalizeChartTypeKey(chartType);
-  if (ct === null) return { ok: false, why: "not a chart type GD360 draws" };
+  if (ct === null) return { ok: false, why: "not a chart type Euliv draws" };
   if (ct === "grouped_bar") ct = "bar";
   if (ct === "step_line") ct = "line";
   const t = shape.time;
@@ -424,14 +424,15 @@ export function resolve(shape: ChartShape, hint?: string | null, explicit = fals
   const out: Resolved = { ...recommend(shape), suggested: null, overrode: false, override_reason: null };
   const raw = hint;
   const key = hint ? normalizeChartTypeKey(hint) : null;
-  if (raw && !key) return { ...out, suggested: String(raw).slice(0, 40), overrode: true, override_reason: "not a chart type GD360 draws" };
+  if (raw && !key) return { ...out, suggested: String(raw).slice(0, 40), overrode: true, override_reason: "not a chart type Euliv draws" };
   if (!key) return out;
   out.suggested = key;
   const plain = key === "grouped_bar" ? "bar" : key === "step_line" ? "line" : key;
   if (plain === out.chart_type) return { ...out, chart_type: key };
   const f = fits(shape, key);
   if (!f.ok) return { ...out, overrode: true, override_reason: f.why };
-  if (explicit || out.strength === "weak") {
+  const twoDimAlt = out.chart_type === "heatmap" && ["stacked_bar", "stacked_bar_100", "pivot", "treemap"].includes(plain);
+  if (explicit || out.strength === "weak" || twoDimAlt) {
     const label = BY_TYPE.get(plain)?.label ?? plain;
     return {
       chart_type: key, block_type: blockTypeFor(plain), strength: "weak",
@@ -456,7 +457,9 @@ export function effectiveChartType(config: any, result: BlockResult | null | und
   const shape = shapeFromResult(result, config?.spec, { target });
   const r = recommend(shape);
   const fit = current ? fits(shape, current) : ({ ok: false, why: "" } as Fit);
-  if ((!fit.ok || (r.strength === "strong" && r.chart_type !== current)) && (r.block_type === "chart" || r.block_type === "donut")) {
+  // R61c: as the server's resolve() - two dimensions drawn as a 100% stacked bar, a pivot or a treemap stay as chosen
+  const twoDimAlt = fit.ok && r.chart_type === "heatmap" && ["stacked_bar", "stacked_bar_100", "pivot", "treemap"].includes(current || "");
+  if (!twoDimAlt && (!fit.ok || (r.strength === "strong" && r.chart_type !== current)) && (r.block_type === "chart" || r.block_type === "donut")) {
     return { chartType: r.chart_type, blockType: r.block_type, reason: r.reason };
   }
   if (fit.ok && r.chart_type === current) return { ...stored, reason: r.reason };

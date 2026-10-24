@@ -190,7 +190,9 @@ export function DonutChart({ items, format = PLAIN_FORMAT, scope, column = null,
   const areaW = side ? Math.round(Math.min(size.w * 0.54, 340)) : size.w;
   const areaH = side ? size.h : Math.round(Math.max(96, Math.min(size.h - legendH - 8, 220)));
   const cx = areaW / 2, cy = areaH / 2;
-  let r = Math.min(areaH / 2 - 18, areaW / 2 - 78);
+  // R61c: beside its legend with few slices the ring draws no callouts, so it needs no room for them - a bigger ring
+  const calloutRoom = side && slices.length <= 4 ? 10 : 78;
+  let r = Math.min(areaH / 2 - 18, areaW / 2 - calloutRoom, side && slices.length <= 4 ? 120 : 999);
   const labelled = r >= 38;
   if (!labelled) r = Math.max(24, Math.min(areaH / 2 - 6, areaW / 2 - 6));
   const inner = pie ? 0 : r * 0.62;
@@ -258,7 +260,7 @@ export function DonutChart({ items, format = PLAIN_FORMAT, scope, column = null,
             <>
               {!pinnable && key}
               <span className="min-w-0 flex-1 truncate text-left text-secondary" title={s.label}>{s.label}</span>
-              <span className="shrink-0 font-medium tabular-nums text-text">{formatValue(s.value, format, size.w < 300 ? "compact" : "full")}</span>
+              <span className="shrink-0 font-medium tabular-nums text-text">{formatValue(s.value, format, size.w < 300 || (side && size.w < 640) ? "compact" : "full")}</span>
               <span className="w-[38px] shrink-0 text-right tabular-nums text-muted">{pctOf(s.share)}</span>
             </>
           );
