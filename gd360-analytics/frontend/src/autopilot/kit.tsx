@@ -34,7 +34,7 @@ export function TruthChip({ truth, title }: { truth?: string | null; title?: str
 
 export function ClosedBy({ by }: { by?: string | null }) {
   if (!by) return null;
-  const word = by === "evidence" ? "Closed by evidence" : by === "autopilot" ? "GD360 already did it" : by === "approval" ? "Closed by approval" : by === "you" ? "Closed by you" : `Closed by ${by}`;
+  const word = by === "evidence" ? "Closed by evidence" : by === "autopilot" ? "Euliv already did it" : by === "approval" ? "Closed by approval" : by === "you" ? "Closed by you" : `Closed by ${by}`;
   const c = by === "evidence" || by === "autopilot" ? "text-good" : "text-muted";
   return <span className={`text-caption ${c}`} data-closed-by={by}>{by === "evidence" || by === "autopilot" ? "✓ " : ""}{word}</span>;
 }

@@ -79,7 +79,7 @@ export function MixSection({ i }: { i: Initiative }) {
             <div className="rounded-ctl border border-tint-border bg-tint/50 p-3.5 flex flex-col gap-1" data-plan-b="">
               <span className="text-ui text-text font-medium">Plan B: {mix.plan_b.title}</span>
               <span className="text-caption text-secondary">{mix.plan_b.detail}</span>
-              <span className="text-caption text-muted">GD360 can't change budgets inside Meta or Google Ads. Approving it adds a task with the exact numbers for whoever runs the ads.</span>
+              <span className="text-caption text-muted">Euliv can't change budgets inside Meta or Google Ads. Approving it adds a task with the exact numbers for whoever runs the ads.</span>
             </div>
           ) : <p className="m-0 text-caption text-muted">{mix.note || "The current split is close to the best the curves show."}</p>}
         </div>

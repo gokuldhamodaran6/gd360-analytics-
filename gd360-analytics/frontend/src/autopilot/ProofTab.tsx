@@ -41,7 +41,7 @@ export default function ProofTab({ i }: { i: Initiative }) {
 
       {p && (
         <>
-          <Section title="Targets" sub="Each number says how true it is: counted by GD360, matched from a source, or typed by a person.">
+          <Section title="Targets" sub="Each number says how true it is: counted by Euliv, matched from a source, or typed by a person.">
             <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
               {p.targets.map((t) => (
                 <div key={t.key} className="flex flex-col gap-1.5">
@@ -98,7 +98,7 @@ export default function ProofTab({ i }: { i: Initiative }) {
 
 export function Calibration({ c }: { c: any }) {
   return (
-    <Section title="Show-up calibration" sub="The show-up chance GD360 gave each registration, against who really came.">
+    <Section title="Show-up calibration" sub="The show-up chance Euliv gave each registration, against who really came.">
       {c.state !== "ok" ? <p className="m-0 text-ui text-muted">{c.why}</p> : (
         <div className="flex flex-col gap-3" data-calibration="">
           <div className="flex flex-col gap-2">
