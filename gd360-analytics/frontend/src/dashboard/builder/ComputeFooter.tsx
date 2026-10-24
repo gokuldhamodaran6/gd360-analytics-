@@ -10,7 +10,7 @@ import { formatBytes } from "../canvas/cells";
 // a block reports one.
 
 export function computeSummary(proposal: DashboardProposal | null, kept: ProposalBlock[]): { provider: string; queries: number; bytes: number | null } {
-  const provider = proposal ? (proposal.warehouse_native ? providerDisplayName(proposal.datasource_kind) : "GD360") : "";
+  const provider = proposal ? (proposal.warehouse_native ? providerDisplayName(proposal.datasource_kind) : "Euliv") : "";
   const queries = kept.filter((b) => b.type !== "text" && (b.sql || b.recipe || b.spec)).length;
   let bytes: number | null = null;
   for (const b of kept) {

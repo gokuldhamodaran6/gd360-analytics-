@@ -169,7 +169,7 @@ export function useProposalFlow(): ProposalFlow {
       setStep("refine");
     } catch (e: any) {
       if (mine !== seq.current) return;
-      setError(errorDetail(e, "GD360 couldn't build a proposal from that description. Try again, or name the numbers that matter most."));
+      setError(errorDetail(e, "Euliv couldn't build a proposal from that description. Try again, or name the numbers that matter most."));
       setStep("describe");
     } finally {
       if (mine === seq.current) setLoading(false);

@@ -28,12 +28,12 @@ export function proposalSupport(kind: string | null | undefined): SourceSupport 
     return { level: "warehouse", note: "Every block is a query checked in the warehouse before you see it; numbers compute on publish." };
   }
   if ((FILE_LIKE_KINDS as readonly string[]).includes(k)) {
-    return { level: "file", note: "Computed in GD360 on publish. Blocks use plain measures here (sum, average, count, min, max) with no filters or formulas of their own." };
+    return { level: "file", note: "Computed in Euliv on publish. Blocks use plain measures here (sum, average, count, min, max) with no filters or formulas of their own." };
   }
   if (k === "streaming") {
     return { level: "unsupported", reason: "A streaming source has no table to propose from until events have arrived. Start from a blank canvas in its project instead." };
   }
-  return { level: "unsupported", reason: "GD360 can't propose a dashboard from this kind of source yet. Start from a blank canvas in its project instead." };
+  return { level: "unsupported", reason: "Euliv can't propose a dashboard from this kind of source yet. Start from a blank canvas in its project instead." };
 }
 
 // The source's kind as a person reads it ("BigQuery", "CSV file") - the

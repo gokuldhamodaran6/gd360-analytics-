@@ -97,7 +97,7 @@ export function PreviewEmpty() {
       <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center">
         <span className="grid h-10 w-10 place-items-center rounded-[12px] border border-tint-border bg-tint"><SparkleIcon size={18} className="text-brand-ink" /></span>
         <div className="text-body font-semibold text-text">Your draft appears here</div>
-        <div className="max-w-[46ch] text-ui text-muted">Pick a source and say what matters. GD360 drafts the KPIs, charts and tables from your real columns and saved metrics - you keep, swap or remove each one.</div>
+        <div className="max-w-[46ch] text-ui text-muted">Pick a source and say what matters. Euliv drafts the KPIs, charts and tables from your real columns and saved metrics - you keep, swap or remove each one.</div>
       </div>
     </div>
   );
@@ -143,7 +143,7 @@ function PaletteLine({ fromKit }: { fromKit: boolean }) {
       </span>
       <span className="text-secondary">{theme.palette.name}</span>
       <span aria-hidden="true">·</span>
-      <span>{fromKit ? "workspace brand" : "GD360 default"}{theme.colorMode === "single" ? " · single colour" : " · each value keeps its colour"}</span>
+      <span>{fromKit ? "workspace brand" : "Euliv default"}{theme.colorMode === "single" ? " · single colour" : " · each value keeps its colour"}</span>
     </div>
   );
 }
@@ -173,7 +173,7 @@ function PreviewBody({ flow, className, fromKit, appearance }: { flow: ProposalF
   const [pageIndex, setPageIndex] = useState(0);
   const [sqlFor, setSqlFor] = useState<ProposalBlock | null>(null);
   const page = proposal?.pages[Math.min(pageIndex, Math.max(0, (proposal?.pages.length || 1) - 1))];
-  const provider = proposal ? (proposal.warehouse_native ? providerDisplayName(proposal.datasource_kind) : "GD360") : "";
+  const provider = proposal ? (proposal.warehouse_native ? providerDisplayName(proposal.datasource_kind) : "Euliv") : "";
   const busy = revising || publishing;
 
   const kpis = useMemo(() => (page?.blocks || []).filter((b) => b.type === "kpi"), [page]);
