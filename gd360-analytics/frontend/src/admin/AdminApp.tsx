@@ -81,7 +81,7 @@ function Shell({ me }: { me: Me }) {
         <Link to="/admin" className="mc-brand">
           <span className="mc-brand-g">G</span>
           <span style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-            <span style={{ fontWeight: 800, fontSize: 15 }}>GD360</span>
+            <span style={{ fontWeight: 800, fontSize: 15 }}>Euliv</span>
             <span className="mc-mono" style={{ fontSize: 10.5, letterSpacing: "0.12em", color: "var(--g)" }}>MISSION CONTROL</span>
           </span>
         </Link>
@@ -168,9 +168,9 @@ export default function AdminApp() {
       <div className="mc-root" style={{ alignItems: "center", justifyContent: "center", padding: 24 }}>
         <div className="mc-card mc-pad" style={{ maxWidth: 440, display: "flex", flexDirection: "column", gap: 12 }}>
           <span className="mc-lbl">MISSION CONTROL</span>
-          <h1 style={{ margin: 0, fontSize: 24 }}>This area is for the GD360 team.</h1>
+          <h1 style={{ margin: 0, fontSize: 24 }}>This area is for the Euliv team.</h1>
           <p style={{ margin: 0, color: "var(--ink2)", lineHeight: 1.55 }}>Your account doesn't have a Mission Control role. If you should have one, ask an Owner to invite your email.</p>
-          <Link to="/" className="mc-btn p" style={{ alignSelf: "flex-start" }}>Back to GD360</Link>
+          <Link to="/" className="mc-btn p" style={{ alignSelf: "flex-start" }}>Back to Euliv</Link>
         </div>
       </div>
     );
