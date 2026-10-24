@@ -83,7 +83,7 @@ export default function DataStep({
       </header>
 
       <div className="flex flex-col gap-2">
-        <label htmlFor="prep-ask" className="text-caption text-muted">Describe each row, and GD360 writes the SQL</label>
+        <label htmlFor="prep-ask" className="text-caption text-muted">Describe each row, and Euliv writes the SQL</label>
         <div className="flex gap-2 flex-wrap">
           <input
             id="prep-ask"
@@ -136,7 +136,7 @@ export default function DataStep({
 
       {res?.healed && res.attempts && (
         <div className="rounded-ctl border px-3 py-2.5 flex flex-col gap-1.5" style={{ borderColor: "rgb(var(--auto-tell) / 0.4)", background: "rgb(var(--auto-tell) / 0.08)" }} role="status">
-          <span className="text-ui font-medium text-text">GD360 fixed its own SQL {res.attempts.length - 1} time{res.attempts.length > 2 ? "s" : ""} before this ran</span>
+          <span className="text-ui font-medium text-text">Euliv fixed its own SQL {res.attempts.length - 1} time{res.attempts.length > 2 ? "s" : ""} before this ran</span>
           {res.attempts.filter((a) => !a.ok).map((a, i) => (
             <span key={i} className="text-caption text-secondary font-mono break-words">try {i + 1}: {a.error}</span>
           ))}

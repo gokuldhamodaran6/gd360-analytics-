@@ -203,7 +203,7 @@ function FieldEditor({
         {(id) =>
           opts.length > 0 && opts.length <= 40 ? (
             <select id={id} className={SELECT + ring} value={(value as string) ?? ""} onChange={(e) => onChange(e.target.value || null)} disabled={!of}>
-              <option value="">{f.required ? "Pick a value…" : "Let GD360 decide"}</option>
+              <option value="">{f.required ? "Pick a value…" : "Let Euliv decide"}</option>
               {opts.map((o) => (
                 <option key={o} value={o}>{o}</option>
               ))}

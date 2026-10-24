@@ -79,7 +79,7 @@ export function ChooseTables({
   return (
     <div className="grid gap-4 lg:grid-cols-2 items-start">
       <section className={CARD} aria-labelledby="ml-use">
-        <h2 id="ml-use" className="m-0 text-section font-semibold text-text">Tables GD360 will use</h2>
+        <h2 id="ml-use" className="m-0 text-section font-semibold text-text">Tables Euliv will use</h2>
         <div className="flex flex-col gap-1">
           <label htmlFor="ml-base" className="text-caption text-secondary">Main table - one row for each thing you want an answer about</label>
           <select id="ml-base" value={base} onChange={(e) => onBase(e.target.value)} className="h-10 w-full min-w-0 rounded-ctl border border-border bg-base px-2.5 text-ui text-text">
@@ -255,7 +255,7 @@ export function CheckJoin({
 
       <section className={CARD} aria-labelledby="ml-preview">
         <div className="flex justify-between gap-2 flex-wrap items-baseline">
-          <h2 id="ml-preview" className="m-0 text-section font-semibold text-text">{key ? `One row per ${key}, ready to learn from` : "The rows GD360 will learn from"}</h2>
+          <h2 id="ml-preview" className="m-0 text-section font-semibold text-text">{key ? `One row per ${key}, ready to learn from` : "The rows Euliv will learn from"}</h2>
           <span className="text-caption text-muted">
             {preview.rows.toLocaleString()} rows · {preview.columns.length} columns · first {preview.preview.length} shown
           </span>
