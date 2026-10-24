@@ -98,7 +98,7 @@ function RequestDialog({
 }: { connector: CatalogConnector | null; viewer: boolean; onClose: () => void; onPick: (start: DataSourceFormStart) => void }) {
   const title = connector ? `${connector.label} isn’t available yet` : "Request a connector";
   const options: { start: DataSourceFormStart; title: string; text: string }[] = [
-    { start: { mode: "api" }, title: "REST or GraphQL API", text: "Point GD360 at any JSON endpoint; it reads it on a schedule." },
+    { start: { mode: "api" }, title: "REST or GraphQL API", text: "Point Euliv at any JSON endpoint; it reads it on a schedule." },
     { start: { mode: "streaming" }, title: "Webhook", text: "Get a private URL that other systems post events to." },
     { start: { mode: "file" }, title: "Upload a file", text: "An export as CSV or Excel, profiled the moment it lands." },
   ];
@@ -115,7 +115,7 @@ function RequestDialog({
         <p className="m-0 text-[14px] text-secondary leading-relaxed">
           {connector
             ? `A native ${connector.label} connector is on the roadmap. Until then, most teams bring the same data in one of these ways:`
-            : "Tell whoever runs GD360 for your team which source you need — native connectors are added in the order teams ask for them. Until then, any of these works today:"}
+            : "Tell whoever runs Euliv for your team which source you need — native connectors are added in the order teams ask for them. Until then, any of these works today:"}
         </p>
         <div className="flex flex-col gap-2">
           {options.map((o) => (
@@ -234,7 +234,7 @@ export default function Catalog({
     } else if (returnError) {
       setNotice(returnError);
     } else if (connectKind) {
-      setNotice("That sign-in came back for an app GD360 doesn't recognise. Please start again from its tile.");
+      setNotice("That sign-in came back for an app Euliv doesn't recognise. Please start again from its tile.");
     }
     const next = new URLSearchParams(params);
     next.delete("connect");

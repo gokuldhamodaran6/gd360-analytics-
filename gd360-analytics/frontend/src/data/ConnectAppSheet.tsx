@@ -353,7 +353,7 @@ export default function ConnectAppSheet({
 
   const nameField = (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor="connect-app-name" className="text-[13px] text-secondary">Name in GD360</label>
+      <label htmlFor="connect-app-name" className="text-[13px] text-secondary">Name in Euliv</label>
       <input id="connect-app-name" className="input h-11" value={name} onChange={(e) => setName(e.target.value)} maxLength={120} />
     </div>
   );
@@ -402,11 +402,11 @@ export default function ConnectAppSheet({
             {meta.oauth_ready && !useKeys ? (
               <>
                 <p className="m-0 text-[15px] leading-relaxed text-secondary">
-                  GD360 opens {label}’s own sign-in. You approve <b className="text-text font-semibold">read-only</b> access — GD360 can never post, reply, spend or change anything.
+                  Euliv opens {label}’s own sign-in. You approve <b className="text-text font-semibold">read-only</b> access — Euliv can never post, reply, spend or change anything.
                 </p>
                 {meta.summary && (
                   <div className="flex flex-col gap-2">
-                    <span className="font-mono text-[10.5px] text-muted tracking-[0.08em] uppercase">What GD360 will read</span>
+                    <span className="font-mono text-[10.5px] text-muted tracking-[0.08em] uppercase">What Euliv will read</span>
                     <div className="flex items-start gap-3 px-3 py-2.5 rounded-[12px] border border-border bg-surface text-[13.5px] text-text">
                       <span className="text-primary mt-0.5"><CheckGlyph /></span>
                       <span>{meta.summary}</span>
@@ -415,7 +415,7 @@ export default function ConnectAppSheet({
                 )}
                 {nameField}
                 <div className="px-3.5 py-3 rounded-[12px] bg-primary/5 border border-primary/20 text-[12.5px] text-secondary leading-relaxed">
-                  Tokens are encrypted at rest and refreshed automatically. GD360 only reads.
+                  Tokens are encrypted at rest and refreshed automatically. Euliv only reads.
                 </div>
                 {errFor(1)}
                 <button type="button" className="btn-primary h-11 text-[14px]" onClick={startSignIn} disabled={busy}>
@@ -448,7 +448,7 @@ export default function ConnectAppSheet({
                 {nameField}
                 {fieldList(keyFields)}
                 <p className="m-0 text-[12.5px] text-muted leading-relaxed">
-                  GD360 only reads. Credentials are encrypted at rest and never shown again after you save them.
+                  Euliv only reads. Credentials are encrypted at rest and never shown again after you save them.
                 </p>
                 {errFor(1)}
                 <button type="button" className="btn-primary h-11 text-[14px]" onClick={fromStep1} disabled={keysMissing.length > 0}>
@@ -507,7 +507,7 @@ export default function ConnectAppSheet({
                 )}
                 {!discovering && accounts && accounts.length === 0 && !(stepError && stepError.step === 2) && (
                   <div className="px-3.5 py-3 rounded-[12px] border border-dashed border-border-strong text-[13px] text-secondary leading-relaxed">
-                    No accounts showed up for this {signedIn ? "sign-in" : "key"}. You can carry on and GD360 syncs what the {signedIn ? "sign-in" : "key"} can see, or go back and use a different one.
+                    No accounts showed up for this {signedIn ? "sign-in" : "key"}. You can carry on and Euliv syncs what the {signedIn ? "sign-in" : "key"} can see, or go back and use a different one.
                   </div>
                 )}
               </>
@@ -569,7 +569,7 @@ export default function ConnectAppSheet({
                 )}
               </div>
               <span className="text-[12.5px] text-secondary">
-                {suggestion ? `GD360 suggests ${suggestion.name} for ${label}. ` : ""}A source can sit in several Spaces — or none for now.
+                {suggestion ? `Euliv suggests ${suggestion.name} for ${label}. ` : ""}A source can sit in several Spaces — or none for now.
               </span>
             </div>
             <div className="flex flex-col gap-2.5">

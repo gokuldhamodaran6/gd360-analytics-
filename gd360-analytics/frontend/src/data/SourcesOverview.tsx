@@ -45,7 +45,7 @@ export function SourcesKpis({ data }: { data: Overview | null }) {
   return (
     <div className="sd-kpis" data-data-kpis="">
       <Kpi label="Tables" value={k ? k.tables.toLocaleString() : "–"} />
-      <Kpi label="Rows GD360 knows of" value={k ? compact(k.rows) : "–"} note={k ? "counted at import or sync; live tables are counted when read" : undefined} />
+      <Kpi label="Rows Euliv knows of" value={k ? compact(k.rows) : "–"} note={k ? "counted at import or sync; live tables are counted when read" : undefined} />
       <Kpi label="Fresh in the last hour" value={k ? `${k.fresh_hour} of ${k.total}` : "–"} note="live sources count as fresh" />
       <Kpi label="Issues" value={k ? k.issues : "–"} tone={k && k.issues ? "warn" : undefined} note={k?.issues ? "a sync failed or needs a sign-in" : "none"} />
     </div>

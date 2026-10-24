@@ -13,7 +13,7 @@ export function errorText(e: any, fallback: string): string {
   if (typeof d === "string" && d.trim()) return d;
   if (Array.isArray(d) && d[0]?.msg) return String(d[0].msg);
   if (e?.code === "ECONNABORTED") return "That took too long to answer. Please try again.";
-  if (e && !e.response) return "Couldn't reach GD360. Check your connection and try again.";
+  if (e && !e.response) return "Couldn't reach Euliv. Check your connection and try again.";
   return fallback;
 }
 
