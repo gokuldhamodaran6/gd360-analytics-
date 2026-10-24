@@ -1215,7 +1215,7 @@ function SidePanel({ on, workspaceId, wsLabel, initials, name, items, onClose, o
           {recent?.map((c) => (
             <Link key={c.id} to={`/chat/${c.id}`} onClick={onClose} className={`gx-sb-rc${c.id === convId ? " on" : ""}`} title={c.title}>{c.title || "Untitled"}</Link>
           ))}
-          {!!recent?.length && <Link to="/library" onClick={onClose} className="gx-sb-rc all">See all in Saved work</Link>}
+          {!!recent?.length && <Link to="/library" onClick={onClose} className="gx-sb-rc all">See all in Library</Link>}
         </div>
         <span style={{ flex: 1, minHeight: 12 }} />
         {eulivAvailable() && (
@@ -1287,7 +1287,7 @@ export default function AppSidebar({
   const primary = [
     { key: "home", label: "Home", to: "/", icon: GX.home },
     { key: "new", label: "New", to: "/chat", icon: GX.plus },
-    { key: "library", label: "Saved work", to: "/library", icon: GX.lib },
+    { key: "library", label: "Library", to: "/library", icon: GX.lib },
     { key: "dashboards", label: "Dashboards", to: "/dashboards", icon: GX.grid },
     { key: "data", label: "Data", to: "/data", icon: GX.db },
     { key: "automations", label: "Automate", to: "/automations", icon: GX.bolt },
