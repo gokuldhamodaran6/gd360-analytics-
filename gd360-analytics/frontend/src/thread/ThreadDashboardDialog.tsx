@@ -73,7 +73,7 @@ export function VisualIcon({ visual, size = 15 }: { visual: string; size?: numbe
 export function originTone(origin: string): { fg: string; bg: string; label: string } {
   if (/^Q\d+$/.test(origin)) return { fg: "rgb(var(--color-kind-answer))", bg: "rgb(var(--color-kind-answer-fill))", label: `From ${origin}` };
   if (origin === "you") return { fg: "rgb(var(--color-kind-dashboard))", bg: "rgb(var(--color-kind-dashboard-fill))", label: "You" };
-  return { fg: "rgb(var(--color-series-1))", bg: "rgb(var(--color-series-1) / 0.12)", label: "GD360" };
+  return { fg: "rgb(var(--color-series-1))", bg: "rgb(var(--color-series-1) / 0.12)", label: "Euliv" };
 }
 
 function Modal({ open, onClose, busy, children, width }: { open: boolean; onClose: () => void; busy: boolean; children: ReactNode; width: number }) {
@@ -111,7 +111,7 @@ type Page = { key: string; title: string; ids: string[] };
 type Step = "choose" | "arrange" | "building";
 
 const MODES: { id: ThreadPlanMode; title: string; icon: ReactNode; tone: string }[] = [
-  { id: "auto", title: "GD360 builds the best one", icon: <SparkIcon size={17} />, tone: "brand" },
+  { id: "auto", title: "Euliv builds the best one", icon: <SparkIcon size={17} />, tone: "brand" },
   { id: "arrange", title: "Let me arrange it", icon: <ListIcon size={17} />, tone: "blue" },
   { id: "answers", title: "Only my answers", icon: <ChatIcon size={17} />, tone: "orange" },
 ];
@@ -391,10 +391,10 @@ export function CreateFromThreadDialog({
         ))}
         <div className="px-6 sm:px-7 pb-3 flex items-center gap-x-4 gap-y-2 flex-wrap">
           <span className="inline-flex items-center gap-1.5 text-caption text-secondary"><span className="w-2 h-2 rounded-full bg-kind-answer" />From your answers</span>
-          <span className="inline-flex items-center gap-1.5 text-caption text-secondary"><span className="w-2 h-2 rounded-full" style={{ background: "rgb(var(--color-series-1))" }} />Added by GD360</span>
+          <span className="inline-flex items-center gap-1.5 text-caption text-secondary"><span className="w-2 h-2 rounded-full" style={{ background: "rgb(var(--color-series-1))" }} />Added by Euliv</span>
           <span className="flex-1" />
           <button type="button" onClick={resuggest} data-resuggest="" className="ui-focus inline-flex items-center gap-1.5 h-8 px-3 rounded-full border border-border text-caption text-secondary hover:text-text hover:border-border-strong">
-            <SparkIcon size={13} />Let GD360 arrange it
+            <SparkIcon size={13} />Let Euliv arrange it
           </button>
           <button type="button" onClick={addPage} data-add-page="" className="ui-focus inline-flex items-center gap-1.5 h-8 px-3 rounded-full border border-border text-caption text-secondary hover:text-text hover:border-border-strong">
             <PlusIcon size={13} />Add page

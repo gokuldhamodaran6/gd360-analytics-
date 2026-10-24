@@ -159,7 +159,7 @@ export function ExplainPanel({ target, title, className = "" }: { target: Explai
     >
       <div className="flex items-center gap-2 text-caption text-muted">
         <GdMark size={20} />
-        <span className="text-ui font-semibold text-text">GD360</span>
+        <span className="text-ui font-semibold text-text">Euliv</span>
         <span className="truncate">
           {s.loading ? "· reading the numbers already here…" : s.data ? `· from the numbers on screen${s.data.seconds != null ? ` · ${fmtNumber(Math.max(0.1, s.data.seconds), 1)} s` : ""} · nothing re-run` : ""}
         </span>
@@ -223,7 +223,7 @@ export function ExplainBody({ e, onFollowup, onAskAbout, onRunInstead }: {
       <span className="text-caption text-faint">
         {e.written_by === "numbers"
           ? "Written from the computed numbers alone."
-          : "Every number above is one GD360 already computed - checked before it was shown."}
+          : "Every number above is one Euliv already computed - checked before it was shown."}
       </span>
     </div>
   );
@@ -249,7 +249,7 @@ export function ExplainTurn({
       <div className="rounded-[16px] p-3.5 -mx-1 flex flex-col gap-3 border border-border bg-surface">
         <div className="flex items-center gap-2 text-caption text-muted">
           <GdMark />
-          <span className="text-ui font-semibold text-text">GD360</span>
+          <span className="text-ui font-semibold text-text">Euliv</span>
           <span className="truncate">· explained from that answer's numbers{e.seconds != null ? ` · ${fmtNumber(Math.max(0.1, e.seconds), 1)} s` : ""}</span>
         </div>
         <ExplainBody e={e} onFollowup={canEdit ? onFollowup : undefined} onRunInstead={canEdit && e.question ? onRunInstead : undefined} />

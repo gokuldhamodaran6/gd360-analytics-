@@ -133,7 +133,7 @@ export function ModeSwitch({
   return (
     <div
       role="radiogroup"
-      aria-label="How GD360 answers"
+      aria-label="How Euliv answers"
       data-mode-switch=""
       className={`inline-flex items-center rounded-full border border-border bg-base ${lg ? "h-11 p-[3px] gap-0.5" : "h-8 p-[2px] gap-0.5"}`}
     >
@@ -224,7 +224,7 @@ export function ThreadComposer({
               if (can) onSubmit();
             }
           }}
-          placeholder={locked ? "GD360 is working on the last question…" : voice.listening ? "Listening…" : placeholder}
+          placeholder={locked ? "Euliv is working on the last question…" : voice.listening ? "Listening…" : placeholder}
           disabled={busy}
           className="block w-full min-h-[48px] resize-none bg-transparent border-0 outline-none px-3.5 pt-3 pb-1 text-[15px] leading-[22px] text-text placeholder:text-faint"
         />

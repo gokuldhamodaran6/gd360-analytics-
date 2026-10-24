@@ -162,7 +162,7 @@ export type MicProblem =
 export const MIC_HELP: Record<MicProblem, string> = {
   insecure: "The microphone only works on a secure (https) page.",
   unsupported: "This browser can't use a microphone here. Try Chrome or Edge, or type instead.",
-  blocked: "The microphone is blocked for GD360. Click the lock or mic icon in your browser's address bar, allow the microphone, then try again.",
+  blocked: "The microphone is blocked for Euliv. Click the lock or mic icon in your browser's address bar, allow the microphone, then try again.",
   "no-device": "No microphone was found. Plug one in (or connect your headset), then try again.",
   "in-use": "Your microphone is busy - another app (like Zoom, Teams or Meet) may be using it. Close it and try again.",
   muted: "Your microphone is muted. Check the mute switch on your headset or your computer's sound settings.",
