@@ -211,8 +211,8 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
   }), [send]);
   const submit = () => {
     if (about) {
+      // R62: Ask keeps the card in the box - ask as many questions about it as you like; × lets it go
       const a = about;
-      setAbout(null);
       void send(`${a.prefix}: ${text.trim()}`, { about_target: a.target, context_run_id: a.runId });
       return;
     }
@@ -325,9 +325,10 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
     if (last.kind === "data" && r?.status === "done") {
       if (!(last.placements || []).length && (r.result?.visuals || []).length) sugg.push({ label: "Make a dashboard", icon: "grid", go: () => void onMakeDashboard(last) });
       sugg.push({ label: "Write it up as a doc", icon: "doc", go: () => void send("Write this up as a document") });
-      sugg.push({ label: "Set an alert", icon: "bell", go: () => prefill("Alert me when ") });
-      for (const q of (r.result?.answer?.next_questions || []).slice(0, 1)) sugg.push({ label: short(q, 44), icon: "chat", go: () => void send(q) });
+      // R62: alerts are set on a dashboard, over its charts - an answer offers its follow-up questions instead
+      for (const q of (r.result?.answer?.next_questions || []).slice(0, 2)) sugg.push({ label: short(q, 44), icon: "chat", go: () => void send(q) });
     } else if (last.kind === "dashboard" || last.kind === "dashboard_edit") {
+      sugg.push({ label: "Alert me on a number", icon: "bell", go: () => prefill("Alert me when ") });
       sugg.push({ label: "Email it every Monday", icon: "clock", go: () => void send("Email this dashboard every Monday at 9am") });
       sugg.push({ label: "Write it up as a doc", icon: "doc", go: () => void send("Write this up as a document") });
       sugg.push({ label: "Undo the last change", icon: "undo", go: () => void send("undo") });

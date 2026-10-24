@@ -32,7 +32,7 @@ export function ModeSeg({ mode, onMode, disabled, short = false }: { mode: Mode;
       <button type="button" role="radio" aria-checked={!guided} className={!guided ? "on" : ""} disabled={disabled} onClick={() => onMode("auto")} data-c2-mode-opt="quick"
         title="The number, a chart and the reason in about 20 seconds">{short ? "Quick" : <>Quick<span className="c2-seg-x"> answer</span></>}</button>
       <button type="button" role="radio" aria-checked={guided} className={guided ? "on" : ""} disabled={disabled} onClick={() => onMode("guided")} data-c2-mode-opt="guided"
-        title="GD360 plans the steps, shows each step's numbers and waits for your OK before going on">{short ? "Guided" : <>Guided<span className="c2-seg-x"> analysis</span></>}</button>
+        title="Euliv plans the steps, shows each step's numbers and waits for your OK before going on">{short ? "Guided" : <>Guided<span className="c2-seg-x"> analysis</span></>}</button>
     </span>
   );
 }

@@ -79,7 +79,7 @@ function HomeComposer({ value, onChange, onSubmit, mode, onMode, busy, scope, pl
   useEffect(() => { ref.current?.focus(); }, []);
   return (
     <div className="hm-cmp" data-c2-composer="">
-      <label htmlFor="c2-ask" className="gx-sr">Ask GD360</label>
+      <label htmlFor="c2-ask" className="gx-sr">Ask Euliv</label>
       <textarea id="c2-ask" ref={ref} rows={2} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (value.trim() && !busy) onSubmit(); } }} />
       {dict.error && <span style={{ fontSize: 12.5, color: "rgb(var(--color-danger))", padding: "0 22px" }}>{dict.error}</span>}
@@ -182,7 +182,7 @@ function HomeBody() {
         <div className="hm-in">
           <h1 data-c2-greeting="">{isNew ? "What do you want to know or build?" : hello}</h1>
           <HomeComposer value={text} onChange={setText} onSubmit={() => void start(text)} mode={mode} onMode={onMode} busy={busy}
-            placeholder={hasData ? `Ask anything about ${scopeName}, or tell GD360 what to build` : "Ask anything. Connect data when you're ready."}
+            placeholder={hasData ? `Ask anything about ${scopeName}, or tell Euliv what to build` : "Ask anything. Connect data when you're ready."}
             scope={<ScopePicker scope={scope} onChange={setScope} sources={sources} spaces={spaces} variant="compact" placement="below" disabled={busy} />} />
           {error && <div className="c2-err">{error}</div>}
           <p className="hm-how" data-c2-how="">
@@ -212,7 +212,7 @@ function HomeBody() {
             <div className="hm-nodata">No data connected yet - you can already ask world questions and what-ifs. <Link to="/data">Add data</Link></div>
           )}
         </div>
-        <p className="hm-foot">GD360 can make mistakes. Every number links to the data it came from.</p>
+        <p className="hm-foot">Euliv can make mistakes. Every number links to the data it came from.</p>
       </div>
       {showPlan && <Navigate to="/settings/plan" replace />}
     </div>

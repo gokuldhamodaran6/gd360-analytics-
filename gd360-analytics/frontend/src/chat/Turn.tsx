@@ -507,7 +507,7 @@ export function TurnView({
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }} data-c2-turn={turn.kind} data-c2-status={turn.status} data-c2-turn-id={turn.id}>
       {turn.question && <div className="c2-u">{turn.question}</div>}
       <div className="c2-a">
-        <div className="c2-who" aria-hidden="true"><BrandMark size={22} radius={6} />GD360</div>
+        <div className="c2-who" aria-hidden="true"><BrandMark size={22} radius={6} />Euliv</div>
         {(turn.kind !== "chat") && (
           <button type="button" className={`sd-st c2-wst${working ? " work" : ""}${turn.status === "failed" ? " bad" : ""}${open ? " open" : ""}`} onClick={() => setOpen((o) => !o)} data-c2-worked="" aria-expanded={open}>
             {working ? <span className="c2-spin" style={{ width: 13, height: 13 }} />
