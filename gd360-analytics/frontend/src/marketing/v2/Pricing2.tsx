@@ -40,7 +40,7 @@ const FEATURES: Record<string, string[]> = {
 };
 
 export default function Pricing2() {
-  useMarketingPage("GD360 — pricing");
+  useMarketingPage("Euliv — pricing");
   const [plans, setPlans] = useState<Plans | null>(null);
   const [err, setErr] = useState(false);
   const [cur, setCur] = useState<"usd" | "inr">("usd");
@@ -53,7 +53,7 @@ export default function Pricing2() {
         <span className="mk2-badge"><i />Early access</span>
         <h1 style={{ fontSize: "clamp(36px, 5vw, 56px)" }}>Simple plans. Every feature, on every plan.</h1>
         <p>{plans?.all_features
-          ? "While GD360 is in early access every feature is open on every plan and the limits below are not enforced yet. We will tell you well before that changes."
+          ? "While Euliv is in early access every feature is open on every plan and the limits below are not enforced yet. We will tell you well before that changes."
           : "Pick the plan that fits how many people and how much data you have."}</p>
         <div style={{ display: "flex", gap: 12, justifyContent: "center", alignItems: "center", marginTop: 26, flexWrap: "wrap" }}>
           <div className="mk2-seg" role="group" aria-label="Currency">
@@ -81,7 +81,7 @@ export default function Pricing2() {
                 <div className="price">{pr.big}</div>
                 <div className="per">{pr.per}{inrTeam ? " (billed in US dollars)" : ""}</div>
                 {id === "enterprise"
-                  ? (mail ? <a className="mk2-btn sec" href={`mailto:${mail}?subject=GD360%20Enterprise`}>Talk to us</a> : <A className="mk2-btn sec" href="/about">Talk to us</A>)
+                  ? (mail ? <a className="mk2-btn sec" href={`mailto:${mail}?subject=Euliv%20Enterprise`}>Talk to us</a> : <A className="mk2-btn sec" href="/about">Talk to us</A>)
                   : <A className={`mk2-btn ${id === "team" ? "pri" : "sec"}`} href={`/start?plan=${id}${id === "team" ? `&users=${Math.max(seats, 3)}` : ""}`}>{SITE.billingEnabled && id !== "free" ? `Choose ${p.label}` : "Start free"}</A>}
                 <ul>{(FEATURES[id] || []).map((f) => <li key={f}>{f}</li>)}</ul>
               </div>

@@ -2,6 +2,7 @@
 // a first source, a first question, the team. The account is real from step 1 (register + the quick check), and the
 // person stays here after it is made instead of being thrown into the app half set up. Every later step can be
 // skipped. A signed-in visitor starts at step 2; a visitor sent here by an invite link goes straight back to it.
+import { Wordmark } from "../../components/Brand";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../api/AuthContext";
@@ -38,7 +39,7 @@ const QUESTIONS: Record<string, string[]> = {
 const STEPS: [string, string][] = [["Your account", "Who it is for, and how you sign in"], ["Connect data", "One source or a file to start"], ["First question", "What you want to know first"], ["Your team", "Invite people, or later"]];
 
 export default function Start2() {
-  useMarketingPage("GD360 — get started");
+  useMarketingPage("Euliv — get started");
   const { user, register, getCaptcha } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -115,7 +116,7 @@ export default function Start2() {
     <div className="mk2" data-mk2="start">
       <div className="mk2-on">
         <aside>
-          <A href="/" className="mk2-logo"><Mark />GD<span>360</span></A>
+          <A href="/" className="mk2-logo"><Mark /><Wordmark size={18} tone="deep" /></A>
           <div className="mk2-steps" data-mk2-steps="">
             {STEPS.map(([t, d], i) => {
               const n = i + 1;
@@ -136,7 +137,7 @@ export default function Start2() {
           {step === 1 && (
             <>
               <span className="mk2-eb">Step 1 of 4</span>
-              <h1>Who is GD360 for?</h1>
+              <h1>Who is Euliv for?</h1>
               <p className="lead">This sets up your first space. You can change it at any time.</p>
               <div className="mk2-tiles" role="radiogroup" aria-label="Who it is for">
                 {WHO.map(([id, t, d]) => (
@@ -175,7 +176,7 @@ export default function Start2() {
             <>
               <span className="mk2-eb">Step 3 of 4</span>
               <h1>What do you want to know first?</h1>
-              <p className="lead">{source && source !== "db" && source !== "file" ? "A few people ask these first. Pick one or write your own; it waits in the box once your data is in." : "Pick one or write your own. It waits in the box when you open GD360."}</p>
+              <p className="lead">{source && source !== "db" && source !== "file" ? "A few people ask these first. Pick one or write your own; it waits in the box once your data is in." : "Pick one or write your own. It waits in the box when you open Euliv."}</p>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {qs.map((q) => (
                   <button key={q} type="button" className={`mk2-tile${question === q ? " on" : ""}`} onClick={() => setQuestion(q)} data-mk2-q=""><b style={{ fontWeight: 500 }}>{q}</b></button>
@@ -216,7 +217,7 @@ export default function Start2() {
               )}
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                 <button type="button" className="mk2-btn sec lg" onClick={() => setStep(3)}>Back</button>
-                <button type="button" className="mk2-btn pri lg" onClick={finish} data-mk2-finish="">{source && source !== "db" && source !== "file" ? `Connect ${CONNECT.find((c) => c[0] === source)?.[1]}` : source ? "Add my data" : "Open GD360"}</button>
+                <button type="button" className="mk2-btn pri lg" onClick={finish} data-mk2-finish="">{source && source !== "db" && source !== "file" ? `Connect ${CONNECT.find((c) => c[0] === source)?.[1]}` : source ? "Add my data" : "Open Euliv"}</button>
               </div>
             </>
           )}

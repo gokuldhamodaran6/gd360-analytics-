@@ -8,7 +8,7 @@ const BARS: [string, number, string][] = [["Jan", 62, "$398k"], ["Feb", 70, "$44
 
 function ExampleShot() {
   return (
-    <div className="mk2-shot" data-mk2-example="" aria-label="An example of GD360: a question on the left, the steps of the answer on the right">
+    <div className="mk2-shot" data-mk2-example="" aria-label="An example of Euliv: a question on the left, the steps of the answer on the right">
       <div className="bar"><i /><i /><i /><span style={{ marginLeft: 10 }}>Example · made-up shop data</span></div>
       <div className="body">
         <div className="th">
@@ -62,18 +62,18 @@ const DO: [string, string, string][] = [
 const MORE: [string, string][] = [
   ["Pipelines", "Clean and join data on a schedule. Each run is checked before it replaces anything."],
   ["Alerts", "Hear when a number moves, with the reason attached, by email or in the app."],
-  ["Initiatives", "Track a goal across teams. GD360 keeps the evidence and flags what needs a decision."],
+  ["Initiatives", "Track a goal across teams. Euliv keeps the evidence and flags what needs a decision."],
 ];
 const SOURCES = ["Shopify", "WooCommerce", "Stripe", "Google Ads", "Meta Ads", "Google Analytics 4", "Search Console", "HubSpot", "Klaviyo", "Instagram", "YouTube", "LinkedIn Pages", "WhatsApp Business", "PostgreSQL", "MySQL", "SQL Server", "Supabase", "BigQuery", "Snowflake", "Redshift", "CSV and Excel files"];
 
 export default function Landing() {
-  useMarketingPage("GD360 — ask your data, check every answer");
+  useMarketingPage("Euliv — ask your data, check every answer");
   return (
     <Site data="landing">
       <section className="mk2-wrap mk2-hero">
         <span className="mk2-badge"><i />Early access · every feature open on every plan</span>
         <h1>Ask your data. Check every answer.</h1>
-        <p>GD360 connects to the tools your business already runs on and answers in plain words. Every answer shows its steps, the query, the rows and the sources, so you can trust a number before you share it.</p>
+        <p>Euliv connects to the tools your business already runs on and answers in plain words. Every answer shows its steps, the query, the rows and the sources, so you can trust a number before you share it.</p>
         <div className="mk2-cta">
           <A href="/start" className="mk2-btn pri lg" data-mk2-hero-start="">Start free</A>
           <A href="/#how" className="mk2-btn sec lg">See how it works</A>
@@ -103,7 +103,7 @@ export default function Landing() {
           <div>
             <span className="mk2-eb">Why trust it</span>
             <h2>Proof on every number.</h2>
-            <p className="mk2-lead">An answer is only useful if you can check it. GD360 keeps the query, the rows it read and the time of the last sync with every figure, and says plainly when the data cannot answer the question.</p>
+            <p className="mk2-lead">An answer is only useful if you can check it. Euliv keeps the query, the rows it read and the time of the last sync with every figure, and says plainly when the data cannot answer the question.</p>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <div className="mk2-pr">Revenue, March <b>$331,240</b><span className="mk2-chip"><i style={{ background: "var(--brand)" }} />Checked</span></div>
