@@ -127,7 +127,7 @@ function ThreadView({ ui, thread, siblings, onPick, setDirty }: { ui: CommentsUi
         <div className="flex gap-2.5 rounded-[12px] border border-border bg-subtle/60 p-2.5" data-comment-suggestion={s.kind} data-applied={s.applied ? "" : undefined}>
           <span aria-hidden="true" className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border border-tint-border bg-tint text-[12px] text-brand-ink">✦</span>
           <div className="min-w-0 flex-1 text-[12.5px] leading-snug">
-            <div><span className="font-semibold text-text">GD360</span><span className="text-muted"> · suggestion</span></div>
+            <div><span className="font-semibold text-text">Euliv</span><span className="text-muted"> · suggestion</span></div>
             {s.applied ? (
               <div className="mt-0.5 text-secondary">
                 <CheckIcon size={11} className="mr-1 inline text-good" />
@@ -164,7 +164,7 @@ function ThreadView({ ui, thread, siblings, onPick, setDirty }: { ui: CommentsUi
             </Button>
           )}
           {!thread.resolved && <Button size="sm" variant="secondary" onClick={() => setReplying(true)} data-reply="">Reply</Button>}
-          {s && !s.applied && !s.can_apply && <span className="text-[11.5px] text-faint">An editor can accept GD360's suggestion.</span>}
+          {s && !s.applied && !s.can_apply && <span className="text-[11.5px] text-faint">An editor can accept Euliv's suggestion.</span>}
         </div>
       )}
       {error && <div role="alert" className="text-caption text-danger">{error}</div>}

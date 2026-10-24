@@ -110,7 +110,7 @@ function SuggestionCard({ thread, comments, onApplied }: { thread: CommentThread
     <div data-comment-suggestion={s.kind} data-applied={s.applied ? "" : undefined} className="flex gap-2.5 rounded-ctl border border-tint-border bg-tint/50 p-2.5">
       <span aria-hidden="true" className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] bg-surface text-[11px] text-brand-ink">✦</span>
       <div className="min-w-0 flex-1 text-caption">
-        <div className="text-muted"><span className="font-medium text-text">GD360</span> · suggestion</div>
+        <div className="text-muted"><span className="font-medium text-text">Euliv</span> · suggestion</div>
         {s.applied ? (
           <div className="mt-0.5 text-secondary">
             <CheckIcon size={11} className="mr-1 inline text-good" />
