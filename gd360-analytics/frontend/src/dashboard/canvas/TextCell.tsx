@@ -77,7 +77,7 @@ function WatchDialog({ open, onClose, onSave, saving, saved, error, canSave }: {
         <div className="min-w-0 flex-1">
           <div className="text-body font-semibold text-text">Watches arrive in a later layer</div>
           <p className="mt-1 text-ui text-secondary">
-            A watch is a standing alert: GD360 re-runs the cells this finding depends on every refresh and tells you when the number moves. Scheduling and notifications are not wired yet.
+            A watch is a standing alert: Euliv re-runs the cells this finding depends on every refresh and tells you when the number moves. Scheduling and notifications are not wired yet.
             {canSave ? " Save the intent as a comment on this cell so it is not lost - it will be picked up when watches ship." : " Comments are not available on this view, so the intent can't be saved from here yet."}
           </p>
           {error && <div role="alert" className="mt-2 text-caption text-danger">{error}</div>}

@@ -124,7 +124,7 @@ export function formatSeconds(ms: number | null | undefined): string | null {
   return `${(ms / 1000).toLocaleString(undefined, { minimumFractionDigits: ms < 10000 ? 1 : 0, maximumFractionDigits: ms < 10000 ? 1 : 0 })} s`;
 }
 
-const PROVIDER: Record<string, string> = { bigquery: "BigQuery", snowflake: "Snowflake", postgres: "Postgres", postgresql: "Postgres", redshift: "Redshift", mysql: "MySQL", duckdb: "GD360" };
+const PROVIDER: Record<string, string> = { bigquery: "BigQuery", snowflake: "Snowflake", postgres: "Postgres", postgresql: "Postgres", redshift: "Redshift", mysql: "MySQL", duckdb: "Euliv" };
 export function providerName(kind: string | null | undefined): string {
   if (!kind) return "the warehouse";
   return PROVIDER[kind.toLowerCase()] || kind;

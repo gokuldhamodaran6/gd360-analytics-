@@ -66,7 +66,7 @@ export function DataCell({ cell, cells, run, source, mode, parameters, owner, pi
 
   const computed = mode === "warehouse" && resultOk(result)
     ? { provider: result.computed_in || run.computedIn || undefined, rows: result.exact_total_rows ?? (result.spec ? undefined : result.row_count), durationMs: result.duration_ms ?? undefined, cached: Boolean(result.cached) }
-    : mode === "file" ? { provider: "GD360", rows: typeof run.matchedRows === "number" ? run.matchedRows : undefined } : null;
+    : mode === "file" ? { provider: "Euliv", rows: typeof run.matchedRows === "number" ? run.matchedRows : undefined } : null;
   const height = compact ? 120 : block.type === "kpi" ? 140 : block.type === "table" ? 360 : 300;
   const noData = mode === "warehouse" && !result && run.ready && !bound && !spec;
 
