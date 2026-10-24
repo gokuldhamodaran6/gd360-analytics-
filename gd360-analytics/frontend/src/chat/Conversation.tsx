@@ -133,6 +133,16 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
         setCanvas({ type: "steps", turn: t });
         continue;
       }
+      // R59: a question opens the studio at once - the steps fill in on the canvas while they run, and a
+      // problem is shown there too (no more full-width chat while an answer is being worked out)
+      if (t.kind === "data" && !t.guided && t.run_id && t === turns[turns.length - 1] && !onPhone()) {
+        const r = runs[t.run_id];
+        if (r && (liveRun(r) || r.status === "failed" || r.status === "stopped" || (r.status === "done" && (r.steps || []).length > 0))) {
+          openedRef.current.add(t.id);
+          setCanvas({ type: "steps", turn: t });
+          continue;
+        }
+      }
       if (t.kind === "document" && t.status === "working" && t === turns[turns.length - 1]) {
         const a = (t.artifacts || []).find((x) => x.type === "document" && x.doc_id);
         if (a) { const item = canvasFromArtifact(a, t, conversationId); if (item) { setCanvas(item); setCanvasVersion((v) => v + 1); } }
@@ -253,6 +263,12 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
       seen.add(k); out.push({ item, icon, label, badge });
     };
     for (const t of turns) {
+      // R59: a question's own tab exists from the moment it is asked (working, didn't finish, stopped)
+      const tr = t.kind === "data" && t.run_id ? runs[t.run_id] : null;
+      if (tr && !t.guided && !stepsWorthy(tr) && (liveRun(tr) || tr.status === "failed" || tr.status === "stopped")) {
+        push({ type: "steps", turn: t }, "trend", short(t.question), liveRun(tr) ? "working" : tr.status === "stopped" ? "stopped" : "didn't finish");
+        continue;
+      }
       if (t.status !== "done" && !(t.kind === "data" && t.guided) && !(t.kind === "document" && (t.artifacts || []).some((a) => a.doc_id))) continue;
       if (t.kind === "data" && t.run_id && stepsWorthy(runs[t.run_id])) {
         const r = runs[t.run_id]!;

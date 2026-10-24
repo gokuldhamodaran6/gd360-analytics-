@@ -557,7 +557,7 @@ export function TurnView({
           </div>
         )}
         {turn.kind === "analysis" && turn.status === "needs_input" && turn.text && <div className="c2-next"><button type="button" className="c2-nx sm" onClick={() => onAsk(turn.question)}>Try again</button></div>}
-        {showRun && <DataAnswer run={run!} onAsk={onAsk} compact={onCanvas} chips={turn.status === "done" ? <Chips chips={turn.chips} /> : null} />}
+        {showRun && !(turn.status === "failed" && (run!.status === "failed" || run!.status === "stopped")) && <DataAnswer run={run!} onAsk={onAsk} compact={onCanvas} chips={turn.status === "done" ? <Chips chips={turn.chips} /> : null} />}
         {onCanvas && hasSteps && <p className="prose c2-onright" style={{ color: "rgb(var(--color-secondary))" }}>Every step is on the right. You can edit, rerun or remove any of them.</p>}
         {turn.kind === "guided" && run && turn.guided_project_id && (
           <GuidedSteps run={run} projectId={turn.guided_project_id} onChanged={onRunChanged} onAsk={onAsk} />
