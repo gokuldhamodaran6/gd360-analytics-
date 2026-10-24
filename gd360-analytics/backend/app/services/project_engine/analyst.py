@@ -536,7 +536,9 @@ def clean_code(code: str) -> str:
 
 def _call(messages: list[dict], max_tokens: int = 9000) -> str:
     model = (getattr(settings, "ANALYST_MODEL", "") or "").strip() or None
-    return ai_engine._call_llm_resilient(messages, max_tokens=max_tokens, model_override=model)
+    # R59: the rest of the app thinks "low" (fast); the Analyst writes and checks Python, so it may think longer
+    with ai_engine.reasoning_effort((getattr(settings, "GEMINI_ANALYST_REASONING_EFFORT", "") or "").strip().lower() or None):
+        return ai_engine._call_llm_resilient(messages, max_tokens=max_tokens, model_override=model)
 
 
 # ---- running and checking ---------------------------------------------------

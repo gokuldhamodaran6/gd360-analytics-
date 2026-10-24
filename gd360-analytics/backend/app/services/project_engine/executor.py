@@ -78,7 +78,9 @@ def _guarded(fn, run_id: str) -> None:
             run = db.get(models.ProjectRun, run_id)
             if run and run.status in ("planning", "planned", "running"):
                 run.status = "failed"
-                run.error_message = f"Something went wrong while answering: {str(e)[:300]}"
+                # R59: never a Python message in front of the person - the details stay in the server log
+                run.error_message = ("Something went wrong on our side while answering this. It has been logged - "
+                                     "ask it again, or put it another way.")
                 run.finished_at = datetime.utcnow()
                 db.commit()
         except Exception:  # noqa: BLE001
@@ -907,7 +909,7 @@ def _execute(db: Session, run: models.ProjectRun) -> None:
     if _stopped(db, run):
         _finish_stopped(db, run)
         return
-    answer = composer.compose(run.question, plan, analysis, evidence)
+    answer = _safe_compose(run.question, plan, analysis, evidence)
     from . import present
     spec = plan.get("analysis") or {}
     currency = spec.get("currency") or "USD"
@@ -932,6 +934,22 @@ def _execute(db: Session, run: models.ProjectRun) -> None:
     run.finished_at = datetime.utcnow()
     _assistant_message(db, run, answer)
     db.commit()
+
+
+def _safe_compose(question: str, plan: dict, analysis: dict, evidence: list[dict]) -> dict:
+    """R59: the numbers are already computed - a problem in writing the words must never fail the answer.
+    The writer first, then the template, then the main numbers as the headline."""
+    try:
+        return composer.compose(question, plan, analysis, evidence)
+    except Exception as e:  # noqa: BLE001
+        print(f"[project_engine] answer writer failed, using the template: {e!r}")
+    try:
+        return composer.fallback_answer(question, analysis)
+    except Exception as e:  # noqa: BLE001
+        print(f"[project_engine] template failed, using the main numbers: {e!r}")
+    kpis = [f for f in analysis.get("facts") or [] if isinstance(f, dict) and f.get("display")][:3]
+    headline = "; ".join(f"{k.get('label')}: {k['display']}" for k in kpis) or "Here is the result."
+    return {"headline": headline, "answer": "", "causes": [], "ruled_out": [], "next_questions": [], "written_by": "template"}
 
 
 def _kpis_for(analysis: dict) -> list[dict]:

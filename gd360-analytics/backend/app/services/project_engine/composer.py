@@ -56,9 +56,11 @@ Rules:
   peak and the lowest month from the facts, and say every month is in the chart - do not
   list all twelve. When it asks BY a dimension (segment, channel...): give each one's
   forecast from the facts, largest first.
-- DRIVERS: when ANALYSIS SUMMARY has "drivers", answer "what drives / why" with them -
+- DRIVERS: when ANALYSIS SUMMARY has "mix", answer "what drives / why" with it -
   how much of the change came from the number of orders (or customers) and how much
-  from the value of each order, each with its fact - and, for a forecast, the trend and
+  from the value of each order, each with its fact. When it has "drivers" (a list of
+  segments), name the segments that moved the change most, with their facts. For a
+  forecast, also give the trend and
   the seasonal peak that shape it. Never leave a "why" or "what drives" part unanswered.
 - The "answer" adds to the headline; never repeat the headline sentence in it.
 - Never mention SQL, tables, steps, facts or ids in the text.
@@ -190,6 +192,21 @@ def claim_problems(draft: dict, analysis: dict) -> list[str]:
     return out
 
 
+def _mix(s: dict) -> dict:
+    """The orders-vs-value-per-order split (drivers.attach). Older saved runs kept it under "drivers"."""
+    m = s.get("mix")
+    if isinstance(m, dict):
+        return m
+    d = s.get("drivers")
+    return d if isinstance(d, dict) else {}
+
+
+def _segment_drivers(s: dict) -> list:
+    """Which segments explain a change (analysis.py): always a list of dicts."""
+    d = s.get("drivers")
+    return [x for x in d if isinstance(x, dict) and x.get("segments") is not None] if isinstance(d, list) else []
+
+
 def summary_text(analysis: dict) -> str:
     """The sentences GD360 computed itself (never model text): forecast history / notes / labels,
     driver sentences, coverage notes."""
@@ -200,7 +217,7 @@ def summary_text(analysis: dict) -> str:
         if isinstance(fs.get(k), str):
             bits.append(fs[k])
     bits += [str(n) for n in fs.get("notes") or []]
-    dr = s.get("drivers") or {}
+    dr = _mix(s)
     for k in ("sentence", "from_label", "to_label"):
         if isinstance(dr.get(k), str):
             bits.append(dr[k])
@@ -249,7 +266,7 @@ def fallback_answer(question: str, analysis: dict) -> dict:
                 causes.append({"title": f"{c['name']} changed", "detail": f"Effect on {s['metric']}: {facts[c['effect_fact_id']]['display']}.",
                                "fact_ids": [c["effect_fact_id"]], "confidence": "high",
                                "direction": "down" if c["effect"] < 0 else "up"})
-        for d in s.get("drivers") or []:
+        for d in _segment_drivers(s):
             if d["segments"] and d["verdict"] != "broad":
                 seg = d["segments"][0]
                 causes.append({"title": f"{d['label']}: {seg['segment']}", "detail": f"Changed by {facts[seg['fact_ids'][0]]['display']}.",
@@ -307,7 +324,7 @@ def fallback_answer(question: str, analysis: dict) -> dict:
             sd = (facts.get(seg.get("fact_id")) or {}).get("display")
             if sd:
                 answer += f" {seg['name']}: {sd}."
-        dr = s.get("drivers") or {}
+        dr = _mix(s)
         if dr.get("sentence"):
             answer += " " + dr["sentence"]
         return {"headline": headline, "answer": answer, "causes": [], "ruled_out": [],
@@ -320,7 +337,7 @@ def fallback_answer(question: str, analysis: dict) -> dict:
         kpis = [f for f in analysis.get("facts") or []][:3]
         headline = "; ".join(f"{k['label']}: {k['display']}" for k in kpis) or "Here is the result."
         answer = ""
-    dr = s.get("drivers") or {}
+    dr = _mix(s)
     if dr.get("sentence") and atype != "forecast":
         answer = (answer + " " + dr["sentence"]).strip()
     return {"headline": headline, "answer": answer, "causes": causes[:4], "ruled_out": ruled[:4], "next_questions": [],

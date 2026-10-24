@@ -138,7 +138,7 @@ def attach(analysis: dict, plan: dict, tables: dict, question: str, today: date 
                     f"{one} value changed {d('pa')} ({d('ea')}) - most of the move came from the {bigger}.")
         if s1 == s0:
             sentence = sentence.replace(" - most of the move came from", " - they offset each other; the larger push was the")
-        analysis.setdefault("summary", {})["drivers"] = {
+        analysis.setdefault("summary", {})["mix"] = {  # orders vs value per order; "drivers" holds the segment list
             "sentence": sentence, "from_label": str(y0), "to_label": str(y1), "fact_ids": ids, "count": count_word,
             "bigger": bigger,
         }
@@ -167,5 +167,5 @@ def attach(analysis: dict, plan: dict, tables: dict, question: str, today: date 
         if custcol:
             cols.append({"name": custcol, "dtype": "number", "role": "measure", "label": humanize(custcol), "format": "integer"})
         visual["details"] = {"columns": cols, "rows": rows}
-        return analysis["summary"]["drivers"]
+        return analysis["summary"]["mix"]
     return None
