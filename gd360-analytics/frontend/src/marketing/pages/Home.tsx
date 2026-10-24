@@ -2,6 +2,7 @@
 // Markup, inline styles and motion are kept exactly as designed; the
 // page's CSS (animations, hover states) lives in marketing.css, scoped
 // under .mkt-home.
+import { EulivMark, Wordmark } from "../../components/Brand";
 import { Fragment, useState } from "react";
 import { A, useMarketingPage } from "../shared";
 import "../marketing.css";
@@ -33,7 +34,7 @@ function vals(state: any, setState: (patch: any) => void): any {
       story: [
         { cls: "tl1", time: "09:02", t: "The alert", d: "Revenue is 12% below last month. An automation noticed first and posted to #revenue." },
         { cls: "tl2", time: "09:03", t: "The answer", d: "A plan across four sources. The budget cut explains 73% of the drop — with the proof." },
-        { cls: "tl3", time: "09:10", t: "The fix", d: "Marketing restores the budget. GD360 builds a dashboard to watch the recovery." },
+        { cls: "tl3", time: "09:10", t: "The fix", d: "Marketing restores the budget. Euliv builds a dashboard to watch the recovery." },
         { cls: "tl4", time: "Next Monday", t: "The confirmation", d: "Back on trend. The weekly summary says so — every number linked to its query." }
       ],
       teams: [
@@ -67,7 +68,7 @@ function vals(state: any, setState: (patch: any) => void): any {
 }
 
 export default function MarketingHome() {
-  useMarketingPage("GD360 — Every source. One answer. Proven.");
+  useMarketingPage("Euliv — Every source. One answer. Proven.");
   const [state, setS] = useState<any>({ menu: false });
   const setState = (patch: any) => setS((prev: any) => ({ ...prev, ...patch }));
   const V = vals(state, setState);
@@ -80,13 +81,7 @@ export default function MarketingHome() {
           {" "}
           <A href="/" style={{ display: "flex", alignItems: "center", gap: "10px", color: "#E8EEEC" }}>
             {" "}
-            <span style={{ width: "34px", height: "34px", borderRadius: "10px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "17px", boxShadow: "0 0 24px rgba(67,229,160,.35)" }}>
-              {"G"}
-            </span>
-            {" "}
-            <span style={{ fontWeight: "800", fontSize: "20px", letterSpacing: "-0.02em" }}>
-              {"GD360"}
-            </span>
+            <EulivMark size={34} tone="bright" /> <Wordmark size={22} tone="bright" />
             {" "}
           </A>
           {" "}
@@ -161,12 +156,7 @@ export default function MarketingHome() {
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: "48px" }}>
                 {" "}
                 <A href="/" onClick={V.closeMenu} style={{ display: "flex", alignItems: "center", gap: "10px", color: "#E8EEEC" }}>
-                  <span style={{ width: "34px", height: "34px", borderRadius: "10px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "17px" }}>
-                    {"G"}
-                  </span>
-                  <span style={{ fontWeight: "800", fontSize: "20px", letterSpacing: "-0.02em" }}>
-                    {"GD360"}
-                  </span>
+                  <EulivMark size={34} tone="bright" /> <Wordmark size={22} tone="bright" />
                 </A>
                 {" "}
                 <button type="button" aria-label="Close menu" onClick={V.closeMenu} style={{ width: "44px", height: "44px", borderRadius: "12px", border: "1px solid #2A3436", background: "#0E1213", display: "grid", placeItems: "center", cursor: "pointer", padding: "0" }}>
@@ -259,7 +249,7 @@ export default function MarketingHome() {
           </h1>
           {" "}
           <p className="mk-w mk-d5" style={{ margin: "0", fontSize: "clamp(17px, 1.8vw, 21px)", lineHeight: "1.6", color: "#A3B0AC", maxWidth: "720px" }}>
-            {"GD360 is the AI analyst for companies that run on data but don’t have a data team. Ask in plain words — it plans the analysis across your warehouse, databases and apps, runs it where your data lives, and proves every number it gives you."}
+            {"Euliv is the AI analyst for companies that run on data but don’t have a data team. Ask in plain words — it plans the analysis across your warehouse, databases and apps, runs it where your data lives, and proves every number it gives you."}
           </p>
           {" "}
           <div className="mk-m-cta mk-w mk-d6" style={{ display: "flex", gap: "12px", flexWrap: "wrap", justifyContent: "center" }}>
@@ -473,9 +463,9 @@ export default function MarketingHome() {
             {" "}
             <div className="mk-core" style={{ position: "absolute", inset: "0", borderRadius: "50%", background: "radial-gradient(circle at 35% 30%, #1A4636, #0B0F10 70%)", border: "1px solid #2E5E4C", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "8px", padding: "12px", boxSizing: "border-box" }}>
               {" "}
-              <span style={{ width: "clamp(30px, 4vw, 48px)", height: "clamp(30px, 4vw, 48px)", borderRadius: "14px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "clamp(15px, 2vw, 24px)" }}>
-                {"G"}
-              </span>
+              <span style={{ width: "clamp(30px, 4vw, 48px)", height: "clamp(30px, 4vw, 48px)", borderRadius: "14px", background: "#0E1513", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "clamp(15px, 2vw, 24px)" }}>
+<EulivMark size={28} tone="bright" />
+</span>
               {" "}
               <span className="mk-mono" style={{ fontSize: "clamp(9px, 1.1vw, 12px)", color: "#43E5A0" }}>
                 {"one answer"}
@@ -581,7 +571,7 @@ export default function MarketingHome() {
                 <span style={{ width: "10px", height: "10px", borderRadius: "10px", background: "#2A3436" }}></span>
                 {" "}
                 <span className="mk-mono" style={{ marginLeft: "10px", fontSize: "11.5px", color: "#7F8C88" }}>
-                  {"GD360 · Sample company, Lumen Home"}
+                  {"Euliv · Sample company, Lumen Home"}
                 </span>
                 {" "}
               </div>
@@ -758,7 +748,7 @@ export default function MarketingHome() {
             </div>
             {" "}
             <p style={{ margin: "0", maxWidth: "420px", color: "#A3B0AC", fontSize: "16.5px", lineHeight: "1.6" }}>
-              {"AI that invents numbers is worse than no AI. GD360 writes only from computed results — and a checker blocks any figure that doesn’t match its query."}
+              {"AI that invents numbers is worse than no AI. Euliv writes only from computed results — and a checker blocks any figure that doesn’t match its query."}
             </p>
             {" "}
           </div>
@@ -987,7 +977,7 @@ export default function MarketingHome() {
                 </h3>
                 {" "}
                 <p style={{ margin: "0", color: "#A3B0AC", lineHeight: "1.65", fontSize: "16px" }}>
-                  {"Say “which customers will stop buying?” GD360 builds the label from order history, the features at the right point in time and a fair test; checks for leaks; trains several models against a baseline — and explains every score. Learn from one source, several joined on a shared key, or a whole Space. Never a silent sample."}
+                  {"Say “which customers will stop buying?” Euliv builds the label from order history, the features at the right point in time and a fair test; checks for leaks; trains several models against a baseline — and explains every score. Learn from one source, several joined on a shared key, or a whole Space. Never a silent sample."}
                 </p>
                 {" "}
               </div>
@@ -1305,7 +1295,7 @@ export default function MarketingHome() {
             </h2>
             {" "}
             <p style={{ margin: "0", color: "#A3B0AC", fontSize: "16.5px", lineHeight: "1.65" }}>
-              {"GD360 never writes to your systems and never moves raw rows. Every question keeps its plan, SQL, results and answer together — so any number can be traced months later, by you, your auditor or your board."}
+              {"Euliv never writes to your systems and never moves raw rows. Every question keeps its plan, SQL, results and answer together — so any number can be traced months later, by you, your auditor or your board."}
             </p>
             {" "}
             <A href="/pricing#enterprise" style={{ fontWeight: "600", fontSize: "15.5px" }}>
@@ -1421,9 +1411,9 @@ export default function MarketingHome() {
             <span className="mk-wave"></span>
             <span className="mk-wave mk-wv2"></span>
             {" "}
-            <div className="mk-core" style={{ position: "absolute", inset: "0", borderRadius: "26px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "40px" }}>
-              {"G"}
-            </div>
+            <div className="mk-core" style={{ position: "absolute", inset: "0", borderRadius: "26px", background: "#0E1513", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "40px" }}>
+<EulivMark size={40} tone="bright" />
+</div>
             {" "}
           </div>
           {" "}
@@ -1463,12 +1453,7 @@ export default function MarketingHome() {
             <div style={{ flex: "1 1 300px", display: "flex", flexDirection: "column", gap: "16px", maxWidth: "380px" }}>
               {" "}
               <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                <span style={{ width: "32px", height: "32px", borderRadius: "9px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "16px" }}>
-                  {"G"}
-                </span>
-                <span style={{ fontWeight: "800", fontSize: "19px" }}>
-                  {"GD360"}
-                </span>
+                <EulivMark size={32} tone="bright" /> <Wordmark size={21} tone="bright" />
               </div>
               {" "}
               <p style={{ margin: "0", color: "#A3B0AC", fontSize: "15px", lineHeight: "1.6" }}>
@@ -1543,11 +1528,11 @@ export default function MarketingHome() {
           <div style={{ display: "flex", flexWrap: "wrap", gap: "16px", justifyContent: "space-between", borderTop: "1px solid #141A1B", paddingTop: "24px", fontSize: "13.5px", color: "#7F8C88" }}>
             {" "}
             <span>
-              {"© 2026 GD360. All rights reserved."}
+              {"© 2026 Euliv. All rights reserved."}
             </span>
             {" "}
             <span>
-              {"GD360 and the GD360 logo are trademarks of GD360. Other names are trademarks of their respective owners."}
+              {"Euliv and the Euliv logo are trademarks of Euliv. Other names are trademarks of their respective owners."}
             </span>
             {" "}
           </div>

@@ -16,7 +16,7 @@ function vals(state: any, setState: (patch: any) => void): any {
         { n: "02", t: "Data stays where it lives", d: "We query your systems in place, read-only, and bring back only what the answer needs." },
         { n: "03", t: "Plain words over jargon", d: "A founder and a data engineer should both find the answer clear on first read." },
         { n: "04", t: "Never a silent shortcut", d: "No hidden sampling, no invented columns. If something was left out, we say what and why." },
-        { n: "05", t: "Access follows the data", d: "Nobody sees a row or column through GD360 they couldn’t see at the source." }
+        { n: "05", t: "Access follows the data", d: "Nobody sees a row or column through Euliv they couldn’t see at the source." }
       ],
       log: [
         { when: "SEP 2026", delay: "0s", t: "The analyst engine", x: "Questions to SQL across databases and files, dashboards from any answer, and a leak guardrail for machine learning." },
@@ -40,7 +40,7 @@ function vals(state: any, setState: (patch: any) => void): any {
 }
 
 export default function MarketingAbout() {
-  useMarketingPage("GD360 — About us");
+  useMarketingPage("Euliv — About us");
   const [state, setS] = useState<any>({ menu: false });
   const setState = (patch: any) => setS((prev: any) => ({ ...prev, ...patch }));
   const V = vals(state, setState);
@@ -56,7 +56,7 @@ export default function MarketingAbout() {
               {"G"}
             </span>
             <span style={{ fontWeight: "800", fontSize: "20px", letterSpacing: "-0.02em" }}>
-              {"GD360"}
+              {"Euliv"}
             </span>
           </A>
           {" "}
@@ -125,7 +125,7 @@ export default function MarketingAbout() {
                     {"G"}
                   </span>
                   <span style={{ fontWeight: "800", fontSize: "20px", letterSpacing: "-0.02em" }}>
-                    {"GD360"}
+                    {"Euliv"}
                   </span>
                 </A>
                 {" "}
@@ -188,7 +188,7 @@ export default function MarketingAbout() {
           <div style={{ flex: "1 1 640px", minWidth: "0", display: "flex", flexDirection: "column", gap: "28px" }}>
             {" "}
             <span className="mk-mono mk-w mk-d1" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>
-              {"ABOUT GD360"}
+              {"ABOUT Euliv"}
             </span>
             {" "}
             <h1 className="mk-m-h1" style={{ margin: "0", fontWeight: "900", fontSize: "clamp(46px, 7.4vw, 112px)", lineHeight: "0.93", letterSpacing: "-0.055em", textWrap: "balance" }}>
@@ -204,7 +204,7 @@ export default function MarketingAbout() {
             </h1>
             {" "}
             <p className="mk-w mk-d4" style={{ margin: "0", fontSize: "clamp(18px, 1.8vw, 22px)", lineHeight: "1.6", color: "#A3B0AC", maxWidth: "680px" }}>
-              {"The best-run companies have data teams that turn every question into a clear, defensible answer. Most companies never will. GD360 exists to close that gap — for every team, in plain words, with the proof attached."}
+              {"The best-run companies have data teams that turn every question into a clear, defensible answer. Most companies never will. Euliv exists to close that gap — for every team, in plain words, with the proof attached."}
             </p>
             {" "}
           </div>
@@ -275,7 +275,7 @@ export default function MarketingAbout() {
             </p>
             {" "}
             <p style={{ margin: "0", color: "#E8EEEC", fontWeight: "500" }}>
-              {"So we built GD360 the way a great analyst works: understand the business first, plan before running anything, query each source where it lives, and show the work behind every number. Fast enough for a founder. Rigorous enough for a CFO."}
+              {"So we built Euliv the way a great analyst works: understand the business first, plan before running anything, query each source where it lives, and show the work behind every number. Fast enough for a founder. Rigorous enough for a CFO."}
             </p>
             {" "}
           </div>
@@ -398,7 +398,7 @@ export default function MarketingAbout() {
               </span>
               {" "}
               <p style={{ margin: "0", color: "#A3B0AC", fontSize: "15.5px", lineHeight: "1.65" }}>
-                {"We build alongside the teams who use GD360 every day. Join early, shape the roadmap and lock in a founding rate."}
+                {"We build alongside the teams who use Euliv every day. Join early, shape the roadmap and lock in a founding rate."}
               </p>
               {" "}
               <A href={SITE.helloEmail ? "mailto:" + SITE.helloEmail : "/pricing#enterprise"} style={{ fontWeight: "600", fontSize: "15.5px" }}>
@@ -476,7 +476,7 @@ export default function MarketingAbout() {
                 {"G"}
               </span>
               <span style={{ fontWeight: "800", fontSize: "19px" }}>
-                {"GD360"}
+                {"Euliv"}
               </span>
               <span style={{ color: "#7F8C88", fontSize: "14.5px", marginLeft: "8px" }}>
                 {"Every source. One answer. Proven."}
@@ -508,7 +508,7 @@ export default function MarketingAbout() {
           {" "}
           <div style={{ display: "flex", flexWrap: "wrap", gap: "16px", justifyContent: "space-between", borderTop: "1px solid #141A1B", paddingTop: "24px", fontSize: "13.5px", color: "#7F8C88" }}>
             <span>
-              {"© 2026 GD360. All rights reserved."}
+              {"© 2026 Euliv. All rights reserved."}
             </span>
             {SITE.legalLine && (
               <span>

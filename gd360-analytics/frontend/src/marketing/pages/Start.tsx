@@ -2,6 +2,7 @@
 // Markup, inline styles and motion are kept exactly as designed; the
 // page's CSS (animations, hover states) lives in marketing.css, scoped
 // under .mkt-start.
+import { EulivMark, Wordmark } from "../../components/Brand";
 import { FormEvent, Fragment, useEffect, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../api/AuthContext";
@@ -89,7 +90,7 @@ function vals(state: any, setState: (patch: any) => void): any {
 }
 
 export default function MarketingStart() {
-  useMarketingPage("GD360 — Get started");
+  useMarketingPage("Euliv — Get started");
   // 2026-10-09: plan, users and billing can arrive from /pricing
   // (?plan=team&users=8&billing=annual); a signed-in visitor starts at step 2.
   const { user, register, getCaptcha } = useAuth();
@@ -184,12 +185,7 @@ export default function MarketingStart() {
       <aside className="mk-m-aside mk-gridbg" style={{ flex: "1 1 420px", minWidth: "0", position: "relative", overflow: "hidden", backgroundColor: "#0B0F10", borderRight: "1px solid #141A1B", padding: "32px clamp(20px, 4vw, 56px)", display: "flex", flexDirection: "column", gap: "40px", justifyContent: "space-between" }}>
         {" "}
         <A href="/" style={{ display: "flex", alignItems: "center", gap: "10px", color: "#E8EEEC", position: "relative" }}>
-          <span style={{ width: "34px", height: "34px", borderRadius: "10px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "17px" }}>
-            {"G"}
-          </span>
-          <span style={{ fontWeight: "800", fontSize: "20px", letterSpacing: "-0.02em" }}>
-            {"GD360"}
-          </span>
+          <EulivMark size={34} tone="bright" /> <Wordmark size={22} tone="bright" />
         </A>
         {" "}
         <div className="mk-start-orbit" style={{ position: "relative", display: "grid", placeItems: "center" }}>
@@ -209,9 +205,9 @@ export default function MarketingStart() {
               <span className="mk-wave mk-wv2"></span>
               <span className="mk-wave mk-wv3"></span>
               {" "}
-              <div style={{ position: "absolute", inset: "0", borderRadius: "30%", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "34px", boxShadow: "0 0 100px 16px rgba(67,229,160,.3)" }}>
-                {"G"}
-              </div>
+              <div style={{ position: "absolute", inset: "0", borderRadius: "30%", background: "#0E1513", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "34px", boxShadow: "0 0 100px 16px rgba(67,229,160,.3)" }}>
+<EulivMark size={28} tone="bright" />
+</div>
               {" "}
             </div>
             {" "}
@@ -532,7 +528,7 @@ export default function MarketingStart() {
                       </span>
                       {" "}
                       <span className="mk-mono" style={{ fontSize: "12px", color: "#A3B0AC" }}>
-                        {"You’ll sign in to it next — GD360 only ever reads."}
+                        {"You’ll sign in to it next — Euliv only ever reads."}
                       </span>
                       {" "}
                       <div style={{ height: "4px", width: "min(320px, 70vw)", background: "#1A2224", borderRadius: "4px", overflow: "hidden" }}>
@@ -612,7 +608,7 @@ export default function MarketingStart() {
                   <div className="mk-enter" style={{ border: "1px solid #1F2729", background: "#0B0F10", borderRadius: "20px", padding: "20px", display: "flex", flexDirection: "column", gap: "14px" }}>
                     {" "}
                     <span className="mk-mono" style={{ fontSize: "11.5px", letterSpacing: "0.12em", color: "#43E5A0" }}>
-                      {"GD360’S PLAN · "}{V.sourceName}
+                      {"Euliv’S PLAN · "}{V.sourceName}
                     </span>
                     {" "}
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: "8px" }}>
@@ -638,7 +634,7 @@ export default function MarketingStart() {
                       </span>
                       {" "}
                       <button type="button" onClick={openGD360} style={{ background: "#43E5A0", color: "#04140D", fontWeight: "700", fontSize: "15.5px", padding: "14px 22px", borderRadius: "999px", border: "0", fontFamily: "inherit", cursor: "pointer" }}>
-                        {"Open GD360 →"}
+                        {"Open Euliv →"}
                       </button>
                       {" "}
                     </div>
@@ -659,7 +655,7 @@ export default function MarketingStart() {
         {" "}
         <footer style={{ marginTop: "auto", paddingTop: "24px", borderTop: "1px solid #141A1B", display: "flex", justifyContent: "space-between", gap: "16px", flexWrap: "wrap", fontSize: "13px", color: "#7F8C88" }}>
           <span>
-            {"© 2026 GD360. All rights reserved."}
+            {"© 2026 Euliv. All rights reserved."}
           </span>
           <span>
             <A href="/pricing" style={{ color: "#A3B0AC" }}>

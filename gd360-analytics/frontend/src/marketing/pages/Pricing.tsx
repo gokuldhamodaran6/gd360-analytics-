@@ -2,6 +2,7 @@
 // Markup, inline styles and motion are kept exactly as designed; the
 // page's CSS (animations, hover states) lives in marketing.css, scoped
 // under .mkt-pricing.
+import { EulivMark, Wordmark } from "../../components/Brand";
 import { FormEvent, Fragment, useEffect, useState } from "react";
 import { api } from "../../api/client";
 import { v2Api } from "../../api/v2";
@@ -82,7 +83,7 @@ function PlansFaq() {
     ["When do these prices apply?", "At launch. Early-access users hear first, with notice, before anything about their account changes."],
     ["Are the limits enforced now?", "No. Your Plan & usage page shows what you use against the plan, so nothing surprises you later."],
     ["What happens to my work at launch?", "Nothing moves. Sources, dashboards, documents and models stay where they are."],
-    ["Who should talk to us?", "Teams rolling GD360 out company-wide, and anyone who needs it in their own cloud or warehouse."],
+    ["Who should talk to us?", "Teams rolling Euliv out company-wide, and anyone who needs it in their own cloud or warehouse."],
   ];
   return (
     <div className="pl pl-dark">
@@ -98,7 +99,7 @@ function PlansFaq() {
 }
 
 export default function MarketingPricing() {
-  useMarketingPage("GD360 — Pricing");
+  useMarketingPage("Euliv — Pricing");
   const [state, setS] = useState<any>({ menu: false, mplan: "team", annual: false, calc: "team", users: 5 });
   const setState = (patch: any) => setS((prev: any) => ({ ...prev, ...patch }));
   const V = vals(state, setState);
@@ -131,12 +132,7 @@ export default function MarketingPricing() {
         <nav className="mk-site-nav" aria-label="Main" style={{ maxWidth: "1280px", margin: "0 auto", padding: "16px 24px", display: "flex", alignItems: "center", gap: "30px", flexWrap: "wrap" }}>
           {" "}
           <A href="/" style={{ display: "flex", alignItems: "center", gap: "10px", color: "#E8EEEC" }}>
-            <span style={{ width: "34px", height: "34px", borderRadius: "10px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "17px", boxShadow: "0 0 24px rgba(67,229,160,.35)" }}>
-              {"G"}
-            </span>
-            <span style={{ fontWeight: "800", fontSize: "20px", letterSpacing: "-0.02em" }}>
-              {"GD360"}
-            </span>
+            <EulivMark size={34} tone="bright" /> <Wordmark size={22} tone="bright" />
           </A>
           {" "}
           <div className="mk-navlinks mk-d-only" style={{ display: "flex", gap: "26px", flexWrap: "wrap", fontSize: "15px", flex: "1 1 auto" }}>
@@ -200,12 +196,7 @@ export default function MarketingPricing() {
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: "48px" }}>
                 {" "}
                 <A href="/" onClick={V.closeMenu} style={{ display: "flex", alignItems: "center", gap: "10px", color: "#E8EEEC" }}>
-                  <span style={{ width: "34px", height: "34px", borderRadius: "10px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "17px" }}>
-                    {"G"}
-                  </span>
-                  <span style={{ fontWeight: "800", fontSize: "20px", letterSpacing: "-0.02em" }}>
-                    {"GD360"}
-                  </span>
+                  <EulivMark size={34} tone="bright" /> <Wordmark size={22} tone="bright" />
                 </A>
                 {" "}
                 <button type="button" aria-label="Close menu" onClick={V.closeMenu} style={{ width: "44px", height: "44px", borderRadius: "12px", border: "1px solid #2A3436", background: "#0E1213", display: "grid", placeItems: "center", cursor: "pointer", padding: "0" }}>
@@ -269,9 +260,9 @@ export default function MarketingPricing() {
               <div style={{ position: "relative", width: "52px", height: "52px" }}>
                 <span className="mk-wave"></span>
                 <span className="mk-wave mk-wv2"></span>
-                <div style={{ position: "absolute", inset: "0", borderRadius: "16px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "22px" }}>
-                  {"G"}
-                </div>
+                <div style={{ position: "absolute", inset: "0", borderRadius: "16px", background: "#0E1513", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "22px" }}>
+<EulivMark size={30} tone="bright" />
+</div>
               </div>
               {" "}
               <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>
@@ -281,11 +272,11 @@ export default function MarketingPricing() {
             </div>
             {" "}
             <h2 style={{ margin: "0", fontWeight: "900", fontSize: "clamp(34px, 4.6vw, 64px)", lineHeight: "0.98", letterSpacing: "-0.05em", textWrap: "balance" }}>
-              {"Rolling GD360 out across the company?"}
+              {"Rolling Euliv out across the company?"}
             </h2>
             {" "}
             <p style={{ margin: "0", color: "#A3B0AC", fontSize: "17px", lineHeight: "1.65", maxWidth: "560px" }}>
-              {"See GD360 answer your hardest question on your own sources, live. We’ll walk your team through security, governance and roll-out — and shape a plan around how you work."}
+              {"See Euliv answer your hardest question on your own sources, live. We’ll walk your team through security, governance and roll-out — and shape a plan around how you work."}
             </p>
             {" "}
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
@@ -385,12 +376,7 @@ export default function MarketingPricing() {
           <div style={{ display: "flex", flexWrap: "wrap", gap: "40px", justifyContent: "space-between", alignItems: "center" }}>
             {" "}
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <span style={{ width: "32px", height: "32px", borderRadius: "9px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "16px" }}>
-                {"G"}
-              </span>
-              <span style={{ fontWeight: "800", fontSize: "19px" }}>
-                {"GD360"}
-              </span>
+              <EulivMark size={32} tone="bright" /> <Wordmark size={21} tone="bright" />
               <span style={{ color: "#7F8C88", fontSize: "14.5px", marginLeft: "8px" }}>
                 {"Every source. One answer. Proven."}
               </span>
@@ -421,7 +407,7 @@ export default function MarketingPricing() {
           {" "}
           <div style={{ display: "flex", flexWrap: "wrap", gap: "16px", justifyContent: "space-between", borderTop: "1px solid #141A1B", paddingTop: "24px", fontSize: "13.5px", color: "#7F8C88" }}>
             <span>
-              {"© 2026 GD360. All rights reserved."}
+              {"© 2026 Euliv. All rights reserved."}
             </span>
             <span>
               {"Prices in USD per user, excluding applicable taxes."}
