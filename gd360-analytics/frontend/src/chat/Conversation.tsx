@@ -297,6 +297,16 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
     if (canvas && !t.some((x) => x.on)) t.push({ key: curKey, icon: canvas.type === "method" ? "code" : "spark", label: canvas.type === "method" ? "How I worked it out" : "Open", badge: null, on: true, onClick: () => undefined });
     return t;
   }, [items, curKey, canvas]);
+  // R60: reopening a conversation shows its latest work on the canvas - the answers' steps, the report and the
+  // dashboards were hidden behind "Open the work" whenever the last turn had nothing of its own to open
+  const landedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (landedRef.current === conversationId || !turns.length || !items.length) return;
+    landedRef.current = conversationId;
+    const last = turns[turns.length - 1];
+    if (onPhone() || last.status === "working") return;   // a turn still working opens its own canvas
+    if (!canvas) setCanvas(items[items.length - 1].item);
+  }, [conversationId, turns, items, canvas]);
   const lastData = [...turns].reverse().find((t) => t.kind === "data" && t.run_id && runs[t.run_id]?.status === "done") || null;
   const addMenu = (close: () => void) => (
     <>
