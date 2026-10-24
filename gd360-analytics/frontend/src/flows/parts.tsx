@@ -127,12 +127,12 @@ export function DataTab({ flow, sources, act, busy }: { flow: Flow; sources: Sou
   const fileRef = useRef<HTMLInputElement>(null);
   const [fileFor, setFileFor] = useState<string | null>(null);
   const kindOf = (id: string) => sources.find((o) => o.id === id)?.kind;
-  if (!p) return <div className="fl-empty">GD360 hasn’t read the sources yet.</div>;
+  if (!p) return <div className="fl-empty">Euliv hasn’t read the sources yet.</div>;
   const ids = flow.spec.sources.map((s) => s.datasource_id);
   return (
     <>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-        <h2 className="fl-h2" style={{ fontSize: 18 }}>What GD360 found in your data</h2>
+        <h2 className="fl-h2" style={{ fontSize: 18 }}>What Euliv found in your data</h2>
         <span style={{ flex: 1 }} />
         {flow.can_edit && <>
           <button type="button" className="fl-btn sm" disabled={!!busy} onClick={() => act("replan", () => flowsApi.replan(flow.id))}>Read the sources again</button>
@@ -141,7 +141,7 @@ export function DataTab({ flow, sources, act, busy }: { flow: Flow; sources: Sou
       </div>
       {pick && (
         <div className="fl-card" style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }} data-source-picker="">
-          <span className="fl-sub">Pick up to five sources. GD360 reads them again and rebuilds the plan (your schedule and alerts stay).</span>
+          <span className="fl-sub">Pick up to five sources. Euliv reads them again and rebuilds the plan (your schedule and alerts stay).</span>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", maxHeight: 200, overflowY: "auto" }}>
             {sources.filter((o) => !o.managed || ids.includes(o.id)).map((o) => (
               <button type="button" key={o.id} className={`fl-pill${pick.includes(o.id) ? " on" : ""}`} aria-pressed={pick.includes(o.id)}
@@ -451,7 +451,7 @@ export function RunsTab({ flow, fixCard }: { flow: Flow; fixCard: React.ReactNod
             <div className="fl-tl">
               {run.events.map((e, i) => <div key={i}><span className="t">{timeOf(e.at)}</span><i className={e.status === "ok" ? "" : e.status} /><span>{e.text}</span></div>)}
               {run.deliveries?.filter((d: any) => d.status === "sent").map((d: any, i: number) => (
-                <div key={`d${i}`}><span className="t">{timeOf(run.finished_at)}</span><i /><span>Told {d.to} ({d.channel === "in_app" ? "in GD360" : d.channel})</span></div>
+                <div key={`d${i}`}><span className="t">{timeOf(run.finished_at)}</span><i /><span>Told {d.to} ({d.channel === "in_app" ? "in Euliv" : d.channel})</span></div>
               ))}
             </div>
           </div>
@@ -519,7 +519,7 @@ export function SettingsTab({ flow, people, onSaved, setErr, act, busy }: { flow
           <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{peopleList.map((p) => (
             <button key={p.id} type="button" className={`fl-pill${pol.alert_to.includes(p.id) ? " on" : ""}`} aria-pressed={pol.alert_to.includes(p.id)} disabled={!edit} onClick={() => togglePerson("alert_to", p.id)}>{p.name}</button>
           ))}</span>
-          <span className="fl-lbl">In GD360 and by email.</span>
+          <span className="fl-lbl">In Euliv and by email.</span>
         </div>
         <div><span className="l">Daily “it’s ready” message</span>
           <button type="button" className="fl-sw" role="switch" aria-checked={pol.daily_summary} disabled={!edit} onClick={() => setPol("daily_summary", !pol.daily_summary)} aria-label="Daily message" />
