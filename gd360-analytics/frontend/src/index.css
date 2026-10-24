@@ -1492,3 +1492,7 @@ input[type="radio"] {
 }
 body { background: rgb(var(--color-base)); font-family: "Geist", system-ui, sans-serif; }
 .dash-shell { background: rgb(var(--color-base)); }
+
+/* 2026-10-24 (R61): the Euliv orb's gradient - mint -> periwinkle on the dark (default) theme, the deep pair on light */
+:root { --eu-a: #43E5A0; --eu-b: #9DBDFF; }
+:root[data-theme="light"] { --eu-a: #0E9F6B; --eu-b: #5F7FE8; }

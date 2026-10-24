@@ -62,6 +62,7 @@ import StaffApp from "./eventos/StaffApp";
 import ProjectDashboard from "./pages/ProjectDashboard";
 import SpacePage from "./pages/SpacePage";
 import WorkspacePage from "./studio/WorkspacePage";
+import BinPage from "./studio/BinPage";
 import ModelsPage, { ModelPage } from "./studio/ModelsPage";
 import SettingsPage from "./studio/SettingsPage";
 import CommandPalette from "./components/CommandPalette";
@@ -145,7 +146,7 @@ export default function App() {
       <ErrorBoundary resetKey={boundaryKey}>
       <Routes>
       <Route path="/login" element={<Login />} />
-      {/* 2026-10-09: the public website (approved "GD360 Website — Final"
+      {/* 2026-10-09: the public website (approved "Euliv Website — Final"
           mockup). "Get started" is the new sign-up flow; /register opens it too. */}
       <Route path="/pricing" element={<MarketingPricing />} />
       <Route path="/new-landing" element={<MarketingLandingV2 />} />
@@ -172,6 +173,7 @@ export default function App() {
       <Route path="/boards/:boardId" element={<Protected><BoardPage /></Protected>} />
       <Route path="/docs/:docId" element={<Protected><DocPage /></Protected>} />
       <Route path="/library" element={<Protected><WorkspacePage /></Protected>} />
+      <Route path="/bin" element={<Protected><BinPage /></Protected>} />
       <Route path="/library/folders" element={<Protected><Dashboard /></Protected>} />
       <Route path="/library/documents" element={<Protected><LibraryDocs /></Protected>} />
       <Route path="/projects" element={<RedirectKeepingQuery to="/library" />} />
