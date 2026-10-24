@@ -6,7 +6,7 @@ export const SITE = {
   founderRole: "Founder & CEO",
   /** Two or three lines in your own words. Empty shows a short default. */
   founderBio:
-    "Gokul started GD360 so every team can trust its numbers — no data department needed. He leads product, design and engineering.",
+    "Gokul started Euliv so every team can trust its numbers — no data department needed. He leads product, design and engineering.",
   founderLinkedIn: "https://www.linkedin.com/in/gokuldhamodaran/",
   founderEmail: "gokuldhamodaranb@gmail.com",
   investorsEmail: "gokuldhamodaranb@gmail.com",
@@ -19,4 +19,4 @@ export const SITE = {
 };
 
 export const DEFAULT_FOUNDER_BIO =
-  "Building GD360 so that every team — not just the ones with a data department — can ask a question and trust the answer.";
+  "Building Euliv so that every team — not just the ones with a data department — can ask a question and trust the answer.";
