@@ -62,8 +62,8 @@ export default function WorkspacePage() {
   const one = (t: Item["type"]) => TYPES.find((x) => x.id === t)!;
 
   return (
-    <ListPage data="workspace" crumbs={[{ label: "Workspace" }]}>
-      <PageHead title="Workspace" sub={data ? `Everything your team has asked, built and shared. ${data.total.toLocaleString()} item${data.total === 1 ? "" : "s"}${spaces.length ? ` across ${spaces.length} Space${spaces.length === 1 ? "" : "s"}` : ""}.` : "Reading everything in this workspace…"}
+    <ListPage data="workspace" crumbs={[{ label: "Library" }]}>
+      <PageHead title="Library" sub={data ? `Everything your team has asked, built and shared. ${data.total.toLocaleString()} item${data.total === 1 ? "" : "s"}${spaces.length ? ` across ${spaces.length} Space${spaces.length === 1 ? "" : "s"}` : ""}.` : "Reading everything in this workspace…"}
         actions={<>
           <Link to="/library/folders" className="sd-pill"><Ic n="folder" />Folders</Link>
           <Link to="/data?tab=catalog" className="sd-pill">Import</Link>
