@@ -390,7 +390,7 @@ export function ShowCalculation({
         onClick={() => setOpen((o) => !o)}
       >
         <span className={`inline-block transition-transform ${open ? "rotate-90" : ""}`}>&#9656;</span>
-        {/* 2026-09-29 (visual polish round): matches the approved "GD360
+        {/* 2026-09-29 (visual polish round): matches the approved "Euliv
             Flow View Redesign" mockup's own wording for this exact toggle
             ("Show how this was calculated" / "Hide calculation") rather
             than the shorter placeholder copy this shipped with in Phase 4. */}
@@ -1195,8 +1195,8 @@ export default function ChatPanel({
       <div className="p-4 border-b border-border">
         <div className="flex items-start justify-between gap-2">
           <div>
-            <div className="font-semibold">Ask GD360</div>
-            <div className="text-xs text-muted mt-0.5">Clean, explore, visualize, or just ask a question. GD360 writes and runs the work itself.</div>
+            <div className="font-semibold">Ask Euliv</div>
+            <div className="text-xs text-muted mt-0.5">Clean, explore, visualize, or just ask a question. Euliv writes and runs the work itself.</div>
           </div>
           {onAnalysisModeChange && (
             <div className="shrink-0 flex rounded-lg border border-border overflow-hidden text-[11px] font-medium" role="group" aria-label="How much control do you want over analysis">
@@ -1589,7 +1589,7 @@ export default function ChatPanel({
               <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-2.5 py-1.5" role="alert">{sqlError}</div>
             )}
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <label className="flex items-center gap-1.5 text-[11px] text-text cursor-pointer" title="Turns this SELECT into a saved query inside your warehouse - a table you can ask about next, with no rows copied into GD360">
+              <label className="flex items-center gap-1.5 text-[11px] text-text cursor-pointer" title="Turns this SELECT into a saved query inside your warehouse - a table you can ask about next, with no rows copied into Euliv">
                 <input
                   type="checkbox"
                   checked={saveAsTable}

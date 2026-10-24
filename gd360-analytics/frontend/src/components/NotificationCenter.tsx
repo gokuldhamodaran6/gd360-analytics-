@@ -117,7 +117,7 @@ export function NotificationCenter() {
         if (desktopOn() && document.visibilityState === "hidden") {
           for (const n of newOnes.slice(0, 3)) {
             try {
-              const d = new Notification(n.title, { body: n.body || n.data?.source || "GD360", tag: n.id });
+              const d = new Notification(n.title, { body: n.body || n.data?.source || "Euliv", tag: n.id });
               d.onclick = () => {
                 window.focus();
                 if (n.link) navigate(n.link);
@@ -303,7 +303,7 @@ function Panel({ items, unread, onClose }: { items: AppNotification[] | null; un
       {supported && (
         <div className="px-4 py-3 border-t border-border flex items-center gap-3 text-caption text-muted">
           <span className="flex-1">
-            {desktop ? "Desktop alerts are on for this browser." : "Get a desktop alert the moment one fires, even when GD360 is in another tab."}
+            {desktop ? "Desktop alerts are on for this browser." : "Get a desktop alert the moment one fires, even when Euliv is in another tab."}
           </span>
           {!desktop ? (
             <button

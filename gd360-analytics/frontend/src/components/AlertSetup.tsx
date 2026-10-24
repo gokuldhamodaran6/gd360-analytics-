@@ -113,7 +113,7 @@ export function AlertDraftCard({
           </span>
           <Label>TELL</Label>
           <span>
-            You, in GD360 and by email <span className="text-secondary">- choose more people next</span>
+            You, in Euliv and by email <span className="text-secondary">- choose more people next</span>
           </span>
         </div>
 
@@ -289,7 +289,7 @@ type Extra = { kind: "slack" | "teams" | "webhook"; url: string; label: string }
 const EXTRA_INFO: Record<Extra["kind"], { name: string; hint: string; urlHint: string; labelHint: string }> = {
   slack: { name: "Slack channel", hint: "Posts in a channel through an incoming webhook", urlHint: "https://hooks.slack.com/services/…", labelHint: "#sales-alerts" },
   teams: { name: "Microsoft Teams channel", hint: "Posts in a channel through a Teams workflow webhook", urlHint: "https://…webhook.office.com/…", labelHint: "Sales" },
-  webhook: { name: "Any app (webhook)", hint: "Zapier, Make, n8n or your own endpoint - GD360 sends the alert as JSON", urlHint: "https://hooks.zapier.com/…", labelHint: "Ops pager" },
+  webhook: { name: "Any app (webhook)", hint: "Zapier, Make, n8n or your own endpoint - Euliv sends the alert as JSON", urlHint: "https://hooks.zapier.com/…", labelHint: "Ops pager" },
 };
 
 export function AlertConfirmSheet({
@@ -372,7 +372,7 @@ export function AlertConfirmSheet({
       return;
     }
     if (!placeCount) {
-      setErr("Choose at least one place - in GD360 or by email.");
+      setErr("Choose at least one place - in Euliv or by email.");
       return;
     }
     setBusy(true);
@@ -505,7 +505,7 @@ export function AlertConfirmSheet({
       <div className="px-6 sm:px-7 pt-5 flex flex-col gap-2.5">
         <span className="font-mono text-[11px] tracking-[0.14em] text-muted">WHERE</span>
         <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))" }}>
-          <Place on={inApp} onToggle={() => setInApp((v) => !v)} title="In GD360" text="The bell, and a pop-up on any GD360 tab" data="in_app" />
+          <Place on={inApp} onToggle={() => setInApp((v) => !v)} title="In Euliv" text="The bell, and a pop-up on any Euliv tab" data="in_app" />
           <Place
             on={byEmail}
             onToggle={() => setByEmail((v) => !v)}
@@ -588,7 +588,7 @@ export function AlertConfirmSheet({
         <div className="flex flex-col gap-2">
           <span className="font-mono text-[11px] tracking-[0.14em] text-muted pb-2">WHEN IT ARRIVES</span>
           <span className="text-ui text-text">The moment it happens - day or night</span>
-          <span className="text-[12px] text-muted leading-snug">No quiet hours: GD360 checks every hour and tells people as soon as the number crosses, so nobody hears about it the next morning.</span>
+          <span className="text-[12px] text-muted leading-snug">No quiet hours: Euliv checks every hour and tells people as soon as the number crosses, so nobody hears about it the next morning.</span>
         </div>
       </div>
 

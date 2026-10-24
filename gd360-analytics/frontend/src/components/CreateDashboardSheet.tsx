@@ -161,7 +161,7 @@ export default function CreateDashboardSheet({
             <p className="m-0 text-ui text-muted leading-relaxed">
               {upgrading
                 ? "Same name and link. It becomes the full kind: filters, cross-filter, canvas and publishing - computed live on your data."
-                : "The same full dashboard as everywhere in GD360: filters, cross-filter, canvas and publishing - computed live on your data, with a link back to this answer."}
+                : "The same full dashboard as everywhere in Euliv: filters, cross-filter, canvas and publishing - computed live on your data, with a link back to this answer."}
             </p>
           </div>
           <button

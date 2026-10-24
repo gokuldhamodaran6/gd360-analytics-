@@ -159,7 +159,7 @@ export function ComputedInBadge({
     return (
       <span
         className={`inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-full bg-primary/10 text-primary ${className}`}
-        title="This table is a SQL definition stored by GD360 and run inside your warehouse whenever it is used - no rows were copied out."
+        title="This table is a SQL definition stored by Euliv and run inside your warehouse whenever it is used - no rows were copied out."
       >
         &#10003; Built as a saved query in {label}{exactTotalRows != null ? ` · ${fmtInt(exactTotalRows)} rows` : ""}
       </span>
@@ -394,7 +394,7 @@ export function WarehouseResultTable({
         <div className="flex items-baseline gap-2 min-w-0">
           <span className="text-[12px] font-semibold">Result</span>
           <span className="text-[11px] text-muted truncate">
-            {fmtInt(n)} row{n === 1 ? "" : "s"} · this is the only data GD360 received
+            {fmtInt(n)} row{n === 1 ? "" : "s"} · this is the only data Euliv received
             {/* 2026-10-07: a pandas step after the query (a pivot, a
                 shift) can reshape those rows - say so, instead of a "6
                 rows" caption sitting on a 3-row table. */}
@@ -632,7 +632,7 @@ export function QueryBuilderForm({
     <div className="query-builder rounded-xl border border-primary/30 bg-primary/5 overflow-hidden">
       <div className="px-3 py-2 border-b border-primary/20 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
         <div className="text-[12px] font-semibold text-primary">Finish it yourself — every row included</div>
-        <div className="text-[10px] text-accent">GD360 fills in its best guess; you confirm. No AI guessing in the SQL.</div>
+        <div className="text-[10px] text-accent">Euliv fills in its best guess; you confirm. No AI guessing in the SQL.</div>
       </div>
       <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
         {tables.length > 1 && (
@@ -907,7 +907,7 @@ export function NeedsQueryHelpCard({
             )}
             <div className={`flex flex-wrap items-center gap-2 ${saveAsTableAllowed ? "justify-between" : "justify-end"}`}>
               {saveAsTableAllowed && (
-                <label className="flex items-center gap-1.5 text-[11px] text-text cursor-pointer" title="Turns this SELECT into a saved query inside your warehouse - a table you can ask about next, with no rows copied into GD360">
+                <label className="flex items-center gap-1.5 text-[11px] text-text cursor-pointer" title="Turns this SELECT into a saved query inside your warehouse - a table you can ask about next, with no rows copied into Euliv">
                   <input
                     type="checkbox"
                     checked={saveAsTable}
@@ -931,7 +931,7 @@ export function NeedsQueryHelpCard({
 
       <div className="warehouse-footer flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted tabular-nums px-0.5">
         <span className="h-2 w-2 rounded-full bg-amber-500 shrink-0" aria-hidden />
-        <span>0 rows loaded into GD360</span>
+        <span>0 rows loaded into Euliv</span>
         {metered && <><span>·</span><span>failed attempts are validated for free, never billed</span></>}
       </div>
 

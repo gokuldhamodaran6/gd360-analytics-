@@ -31,7 +31,7 @@ export default function MfaStep({ onSubmit, onBack, email }: { onSubmit: (code: 
         <p className="m-0 text-sm text-muted leading-relaxed">
           {recovery
             ? "Type one of the ten recovery codes you saved when you turned on 2-step sign-in. Each works once."
-            : <>Open your authenticator app and type the 6-digit code for GD360{email ? <> ({email})</> : null}.</>}
+            : <>Open your authenticator app and type the 6-digit code for Euliv{email ? <> ({email})</> : null}.</>}
         </p>
       </div>
       {error && <div role="alert" className="text-sm text-danger bg-danger-fill border border-danger-border rounded-ctl px-3 py-2">{error}</div>}

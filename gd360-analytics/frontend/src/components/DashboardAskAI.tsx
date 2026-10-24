@@ -147,6 +147,18 @@ export function AskAIButton({ onClick, alerts }: { onClick: () => void; alerts: 
   );
 }
 
+/** R62: alerts live on the dashboard - one click starts "Alert me when …" in Ask AI, which drafts the alert from the
+ *  page's own numbers and asks before saving it. */
+export function AlertHeaderButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} data-dash-alert=""
+      className="hidden sm:inline-flex ui-focus items-center gap-2 h-10 px-3.5 rounded-ctl border border-border bg-surface text-text text-sm font-semibold hover:bg-surface2"
+      title="Get told when a number on this dashboard crosses a line">
+      <BellSmall size={13} /> Alert
+    </button>
+  );
+}
+
 function AskAIHeaderButton({ onClick, alerts }: { onClick: () => void; alerts: number }) {
   return (
     <button
@@ -154,7 +166,7 @@ function AskAIHeaderButton({ onClick, alerts }: { onClick: () => void; alerts: n
       onClick={onClick}
       className="hidden sm:inline-flex ui-focus items-center gap-2 h-10 px-3.5 rounded-ctl border border-kind-answer-border bg-kind-answer-fill text-kind-answer text-sm font-semibold"
       data-ask-ai=""
-      title="Explain any chart, ask about this page, or tell GD360 what to watch"
+      title="Explain any chart, ask about this page, or tell Euliv what to watch"
     >
       <SparkIcon size={14} /> Ask AI
       {alerts > 0 && (
@@ -194,7 +206,7 @@ export function NoticedBanner({ dashboardId, noticed, onWatch }: { dashboardId: 
       <div className="flex items-center gap-3 flex-wrap rounded-[14px] border border-kind-answer-border bg-kind-answer-fill/70 px-3.5 py-3">
         <span className="w-7 h-7 shrink-0 rounded-[8px] bg-kind-answer-fill text-kind-answer grid place-items-center"><SparkIcon size={13} /></span>
         <span className="flex-1 min-w-[220px] text-ui leading-5">
-          <b className="text-text">GD360 noticed:</b> <span className="text-secondary">{noticed.text}</span>
+          <b className="text-text">Euliv noticed:</b> <span className="text-secondary">{noticed.text}</span>
         </span>
         <button type="button" onClick={() => onWatch(noticed)} className="ui-focus h-8 px-3 rounded-[10px] bg-primary text-on-primary text-[13px] font-semibold">
           Watch it
@@ -221,7 +233,7 @@ type Msg =
 let seq = 0;
 const nid = () => `m${++seq}`;
 
-export type AskSeed = { kind: "watch"; suggestion: WatchSuggestion } | { kind: "explain"; blockId: string } | null;
+export type AskSeed = { kind: "watch"; suggestion: WatchSuggestion } | { kind: "explain"; blockId: string } | { kind: "prefill"; text: string } | null;
 
 export function DashboardAskAI({
   open, onClose, dash, page, run, warehouse, watch, seed, onSeedUsed,
@@ -347,6 +359,10 @@ export function DashboardAskAI({
     if (seed.kind === "watch") {
       const s = seed.suggestion;
       draftFrom({ block_id: s.block_id, op: s.op, value: s.value, page_id: s.page_id }, `Watch ${s.label.toLowerCase()} - tell me if it goes ${s.op} ${s.line_display}`);
+    } else if (seed.kind === "prefill") {
+      // R62: the dashboard's Alert button - the box starts the sentence, the person finishes it
+      setText(seed.text);
+      window.setTimeout(() => { const el = input.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 80);
     } else {
       const b = page?.blocks.find((x) => x.id === seed.blockId);
       if (b) explainBlock(b);
@@ -448,7 +464,7 @@ export function DashboardAskAI({
               <div key={m.id} className="flex flex-col gap-2">
                 <div className="flex items-center gap-2 text-[12px] text-muted">
                   <GdMark size={20} />
-                  <b className="text-ui text-text">GD360</b>
+                  <b className="text-ui text-text">Euliv</b>
                   <span>
                     {m.kind === "draft" ? "· here's the alert I'd set up" : m.kind === "explain" ? `· from the numbers on this page${m.explain.seconds != null ? ` · ${Math.max(0.1, m.explain.seconds).toFixed(1)} s` : ""}` : ""}
                   </span>

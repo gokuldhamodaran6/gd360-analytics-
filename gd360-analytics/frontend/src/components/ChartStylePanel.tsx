@@ -270,7 +270,7 @@ export default function ChartStylePanel({
   if (!chartSpec) {
     return (
       <div className="card p-6 text-sm text-muted text-center">
-        Ask GD360 for a chart first, then come back here to style it: colors, titles, labels and more.
+        Ask Euliv for a chart first, then come back here to style it: colors, titles, labels and more.
       </div>
     );
   }
@@ -375,7 +375,7 @@ export default function ChartStylePanel({
             </div>
             <p className="text-[11px] text-muted leading-relaxed">
               A few of these (sankey, candlestick, gauge, choropleth, faceted bar, 3D scatter and similar) only
-              work when the underlying data has the right shape for them - GD360 will say so and try again if
+              work when the underlying data has the right shape for them - Euliv will say so and try again if
               it does not fit.
             </p>
           </div>

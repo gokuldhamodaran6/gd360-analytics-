@@ -22,7 +22,7 @@ export default class ErrorBoundary extends React.Component<Props, State> {
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     // eslint-disable-next-line no-console
-    console.error("[GD360] A page failed to render:", error, info?.componentStack);
+    console.error("[Euliv] A page failed to render:", error, info?.componentStack);
   }
 
   componentDidUpdate(prev: Props) {

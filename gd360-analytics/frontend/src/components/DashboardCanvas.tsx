@@ -415,7 +415,7 @@ export function AskAiPanel({
     <div className="no-drag flex flex-col gap-2 p-3 h-full">
       <div className="flex items-center justify-between">
         <div className="text-xs font-semibold text-muted flex items-center gap-1.5">
-          <SparkleIcon className="w-3.5 h-3.5 text-accent" /> Ask GD360&apos;s AI
+          <SparkleIcon className="w-3.5 h-3.5 text-accent" /> Ask Euliv&apos;s AI
         </div>
         <button type="button" className="text-xs text-muted hover:text-text" onClick={onClose}>
           Cancel
@@ -1180,7 +1180,7 @@ export function StylePanel({
         <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">Chart type</div>
         {!hasTidyData ? (
           <div className="text-xs text-muted leading-relaxed">
-            This chart doesn&apos;t have restyle data attached yet (it was built before this option existed). Ask GD360&apos;s AI to
+            This chart doesn&apos;t have restyle data attached yet (it was built before this option existed). Ask Euliv&apos;s AI to
             rebuild it, or build a new chart block, to enable type options.
           </div>
         ) : (
@@ -1705,7 +1705,7 @@ function BlockCard({
                   {lineageCode && (
                     <div>
                       <div className="text-[10px] font-semibold uppercase tracking-wide text-muted mb-0.5">
-                        The real code GD360 ran
+                        The real code Euliv ran
                       </div>
                       <pre className="whitespace-pre-wrap break-words px-2 py-1.5 rounded bg-surface2 border border-border font-mono text-[10px] leading-relaxed">
                         {lineageCode}

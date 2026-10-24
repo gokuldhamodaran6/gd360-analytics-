@@ -2261,7 +2261,7 @@ export default function DataTable({
                                     onChange={(e) => setInsertDraft(e.target.value)}
                                   />
                                   <div className="text-[10px] text-muted">
-                                    GD360 will build this as a new AI step in the chat, so you can see exactly what it did.
+                                    Euliv will build this as a new AI step in the chat, so you can see exactly what it did.
                                   </div>
                                   <div className="flex items-center justify-end gap-2">
                                     <button className="text-[11px] text-muted" onClick={() => setInsertComposer(null)}>Cancel</button>

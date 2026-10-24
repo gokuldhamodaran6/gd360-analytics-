@@ -42,7 +42,7 @@ export function TwoStepSection() {
         <div className="flex-1">
           <h2 className="text-lg font-semibold m-0">2-step sign-in</h2>
           <p className="text-sm text-muted m-0 mt-1">
-            After your password, GD360 asks for a code from an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password…). Someone with your password alone can't get in.
+            After your password, Euliv asks for a code from an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password…). Someone with your password alone can't get in.
           </p>
         </div>
         {status && (

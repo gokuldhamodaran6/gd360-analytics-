@@ -66,7 +66,7 @@ export default function StepFlow({
   if (!guided) {
     return (
       <div className="flex items-center justify-between px-4 py-2.5 bg-surface2 border border-border rounded-xl mb-3">
-        <div className="text-xs text-muted">Pro mode - guided steps are hidden. Just ask GD360 anything in the chat.</div>
+        <div className="text-xs text-muted">Pro mode - guided steps are hidden. Just ask Euliv anything in the chat.</div>
         <button className="btn-secondary text-xs px-3 py-1" onClick={onToggleGuided}>
           Show guided steps
         </button>

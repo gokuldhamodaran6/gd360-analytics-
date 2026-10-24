@@ -145,7 +145,7 @@ export default function InAppMessages() {
       {modal && (
         <div className="fixed inset-0 z-[80] bg-[rgb(3_5_6/0.7)] grid place-items-center p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) dismiss(modal); }}>
           <div ref={modalRef} role="dialog" aria-modal="true" aria-labelledby="inapp-modal-title" className="outline-none w-[min(460px,100%)] rounded-[22px] border border-border-strong bg-surface text-text shadow-pop p-6 sm:p-[26px] flex flex-col gap-3">
-            <span className="font-mono text-[11px] tracking-[0.14em] text-kind-answer">FROM THE GD360 TEAM</span>
+            <span className="font-mono text-[11px] tracking-[0.14em] text-kind-answer">FROM THE Euliv TEAM</span>
             <h2 id="inapp-modal-title" className="m-0 text-[24px] font-extrabold tracking-[-0.03em]">{modal.title}</h2>
             {modal.body && <p className="m-0 text-secondary text-[15px] leading-relaxed">{modal.body}</p>}
             <div className="flex gap-2 mt-1">
@@ -158,7 +158,7 @@ export default function InAppMessages() {
       {helpOpen && (
         <div className="fixed inset-0 z-[81] bg-[rgb(3_5_6/0.6)] grid place-items-center p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) setHelpOpen(false); }}>
           <form ref={helpRef} onSubmit={send} role="dialog" aria-modal="true" aria-labelledby="inapp-help-title" className="outline-none w-[min(480px,100%)] rounded-[22px] border border-border-strong bg-surface text-text shadow-pop p-[22px] flex flex-col gap-3">
-            <h2 id="inapp-help-title" className="m-0 text-[20px] font-extrabold">Message the GD360 team</h2>
+            <h2 id="inapp-help-title" className="m-0 text-[20px] font-extrabold">Message the Euliv team</h2>
             <p className="m-0 text-secondary text-[13.5px]">A real person replies by email, usually within a working day.</p>
             {state === "sent" ? (
               <p className="m-0 text-good text-[14px]">Sent. {body}</p>

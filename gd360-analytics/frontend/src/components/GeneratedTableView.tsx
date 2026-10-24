@@ -340,7 +340,7 @@ export default function GeneratedTableView({
               disabled={downloading}
               onClick={download}
               data-testid="gen-download"
-              title="Streams the query's rows straight from your warehouse to your browser as CSV - GD360's server never holds them"
+              title="Streams the query's rows straight from your warehouse to your browser as CSV - Euliv's server never holds them"
             >
               {downloading ? "Downloading…" : totalRows != null ? `Download ${totalRows.toLocaleString()} rows` : "Download rows"}
             </button>

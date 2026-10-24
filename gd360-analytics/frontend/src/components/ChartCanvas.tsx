@@ -163,7 +163,7 @@ export default function ChartCanvas({
         </div>
         <div className="font-semibold">No chart yet</div>
         <div className="text-muted text-sm max-w-xs leading-relaxed">
-          Ask GD360 something about your data (left panel) and your chart will appear here, interactive
+          Ask Euliv something about your data (left panel) and your chart will appear here, interactive
           and ready to export.
         </div>
       </div>

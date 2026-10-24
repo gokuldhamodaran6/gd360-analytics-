@@ -51,7 +51,7 @@ function workspaceId(): string | null {
 }
 
 function errText(e: any): string {
-  if (!e?.response) return "I can't reach GD360 right now - check your internet connection and try again.";
+  if (!e?.response) return "I can't reach Euliv right now - check your internet connection and try again.";
   const d = e.response?.data?.detail;
   return typeof d === "string" ? d : "Something went wrong on my side. Please try again.";
 }
@@ -1172,7 +1172,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
             </button>
           </form>
           <span className="text-[11px] text-faint text-center leading-snug max-w-[520px]">
-            Euliv answers from the sources you can open. GD360 never records audio - your browser turns speech into words.
+            Euliv answers from the sources you can open. Euliv never records audio - your browser turns speech into words.
           </span>
         </footer>
       </div>
@@ -1359,7 +1359,7 @@ function EulivSettingsPanel({ settings, wakeProblem, onDone }: { settings: Euliv
       </div>
 
       <div className="rounded-[14px] border border-kind-answer-border bg-kind-answer-fill/60 p-3.5 text-[12.5px] leading-snug text-secondary">
-        <b className="text-text">Privacy.</b> GD360 never records or stores audio. Your browser's speech service turns speech into words; only the words reach GD360, and Euliv only sees the sources you can already open.
+        <b className="text-text">Privacy.</b> Euliv never records or stores audio. Your browser's speech service turns speech into words; only the words reach Euliv, and Euliv only sees the sources you can already open.
       </div>
       <button type="button" onClick={onDone} className="self-start ui-focus h-10 px-4 rounded-full bg-primary text-on-primary text-ui font-medium">Done</button>
     </div>

@@ -255,7 +255,7 @@ export function PublishToDomainSheet({ dashboardId, open, onClose, onChanged }: 
                 ]}
               />
               <span className="text-caption text-muted">
-                {audience === "domain" && `${audText}${dom.audience !== "public" ? ", signed in with their GD360 account" : ", without signing in"}. Members of ${st.workspace?.name} always can.`}
+                {audience === "domain" && `${audText}${dom.audience !== "public" ? ", signed in with their Euliv account" : ", without signing in"}. Members of ${st.workspace?.name} always can.`}
                 {audience === "invited" && "Only these people (signed in with that email), plus members of the team."}
                 {audience === "members" && `Only the ${st.member_count} member${st.member_count === 1 ? "" : "s"} of ${st.workspace?.name}.`}
               </span>
@@ -332,7 +332,7 @@ export function PublishToDomainSheet({ dashboardId, open, onClose, onChanged }: 
         onCancel={() => setConfirmOff(false)}
         onConfirm={takeOff}
       >
-        {live ? "The address stops opening at once. The dashboard stays in GD360." : "Nothing is published."}
+        {live ? "The address stops opening at once. The dashboard stays in Euliv." : "Nothing is published."}
       </ConfirmDialog>
     </Sheet>
   );

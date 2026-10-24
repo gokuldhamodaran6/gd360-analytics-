@@ -386,7 +386,7 @@ export default function ExplorePanel({
               This chart's underlying rows aren't available to remap directly (either it's an older answer from
               before this feature, or its chart type needs a specific server-built shape). Use the{" "}
               <button className="text-accent hover:underline" onClick={() => setTab("style")}>Style tab</button>{" "}
-              to change its chart type — GD360 will rebuild it.
+              to change its chart type — Euliv will rebuild it.
             </div>
           )
         )}

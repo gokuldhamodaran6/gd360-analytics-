@@ -307,7 +307,7 @@ export default function BuildDashboardModal({
           <>
             <h2 className="text-lg font-bold mb-1">Create a dashboard</h2>
             <p className="text-xs text-muted mb-5 leading-relaxed max-w-sm">
-              The same full dashboard as everywhere in GD360 - live filters, cross-filter, canvas and
+              The same full dashboard as everywhere in Euliv - live filters, cross-filter, canvas and
               publishing - linked back to this analysis.
             </p>
 
@@ -330,7 +330,7 @@ export default function BuildDashboardModal({
                   </span>
                   <div className="font-semibold text-sm mb-1">From this analysis <span className="ml-1 text-[10px] font-semibold uppercase tracking-wide text-primary">Recommended</span></div>
                   <div className="text-xs text-muted leading-relaxed">
-                    GD360 drafts it from what you've explored here, on {currentDatasourceName ? <span className="font-medium text-text">{currentDatasourceName}</span> : "your data"} - you keep, swap or remove each block, then publish.
+                    Euliv drafts it from what you've explored here, on {currentDatasourceName ? <span className="font-medium text-text">{currentDatasourceName}</span> : "your data"} - you keep, swap or remove each block, then publish.
                   </div>
                 </button>
               )}
@@ -345,7 +345,7 @@ export default function BuildDashboardModal({
                 </span>
                 <div className="font-semibold text-sm mb-1">Describe it</div>
                 <div className="text-xs text-muted leading-relaxed">
-                  Say what you want to see - GD360 proposes a dashboard from {currentDatasourceName ? <span className="font-medium text-text">{currentDatasourceName}</span> : "your real data"}, you refine it, then publish.
+                  Say what you want to see - Euliv proposes a dashboard from {currentDatasourceName ? <span className="font-medium text-text">{currentDatasourceName}</span> : "your real data"}, you refine it, then publish.
                 </div>
               </button>
 

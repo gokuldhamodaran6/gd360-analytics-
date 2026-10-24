@@ -126,7 +126,7 @@ function AccountMenu({ isAdmin }: { isAdmin: boolean }) {
               <div className="verify-bar pl-4 py-2.5 mt-3">
                 <div className="text-ui font-semibold">Free plan &middot; Unlimited usage</div>
                 <div className="text-caption text-muted mt-1 leading-relaxed">
-                  GD360 is in early access - every feature is free and unlimited for now. Paid plans
+                  Euliv is in early access - every feature is free and unlimited for now. Paid plans
                   aren't available yet, and you'll be told clearly before anything about your account
                   changes.
                 </div>
@@ -156,7 +156,7 @@ const PAGE_LABELS: [RegExp, string][] = [
   [/^\/experiments/, "Experiments"], [/^\/initiatives/, "Initiatives"], [/^\/accounts/, "Accounts"], [/^\/(trust|governance)/, "Trust Center"], [/^\/admin/, "Admin"],
 ];
 export function pageLabel(pathname: string): string {
-  return PAGE_LABELS.find(([re]) => re.test(pathname))?.[1] || "GD360";
+  return PAGE_LABELS.find(([re]) => re.test(pathname))?.[1] || "Euliv";
 }
 
 let planCache: { at: number; p: Promise<PlanSummary | null> } | null = null;
@@ -256,7 +256,7 @@ export default function TopNav({
   const crumbs: Crumb[] = breadcrumb && breadcrumb.length ? breadcrumb : title ? [] : [{ label: pageLabel(pathname) }];
   return (
     <header className="gx-top" data-gx-top="">
-      {/* R57: on a phone, ☰ opens the labelled sidebar (on a desktop the GD360 mark in the rail does) */}
+      {/* R57: on a phone, ☰ opens the labelled sidebar (on a desktop the Euliv mark in the rail does) */}
       <button type="button" className="gx-burger" aria-label="Open the sidebar" data-gx-burger="" onClick={() => window.dispatchEvent(new Event("gx:open-sidebar"))}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10" /></svg>
       </button>

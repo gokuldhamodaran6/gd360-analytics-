@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
-import { BrandMark } from "./Brand";
+import { BrandMark, Wordmark } from "./Brand";
 import { datasourceApi, DataSourceSummary, WorkspaceDetail, WorkspaceSummary, workspaceApi } from "../api/client";
 import DataSourceForm, { connectionKindMeta, dataSourceCategory, DATA_SOURCE_CATEGORIES } from "./DataSourceForm";
 import { ChipCloseIcon, SourceDot } from "./ChatPanel";
@@ -436,7 +436,7 @@ function WorkspaceSwitcher({
         {!collapsed && (
           <>
             <span className="min-w-0 flex-1 text-left">
-              <span className="block text-ui font-semibold text-text truncate">GD360 Analytics</span>
+              <span className="block text-ui font-semibold text-text truncate">Euliv Analytics</span>
               <span className="block text-[11px] text-muted truncate">
                 {activeName}
                 {active?.role === "viewer" && " · View only"}
@@ -1087,6 +1087,7 @@ export function ConnectDataPopup({
 // R56 (mobile board): the phone tab bar reads as the day - Today, Ask, Saved
 const PHONE_LABEL: Record<string, string> = { home: "Today", new: "Ask", library: "Saved" };
 const GX = {
+  trash: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" /></svg>,
   home: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z" /></svg>,
   plus: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>,
   lib: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 5h16v14H4zM8 5v14M4 10h16" /></svg>,
@@ -1195,7 +1196,7 @@ function SidePanel({ on, workspaceId, wsLabel, initials, name, items, onClose, o
       <aside ref={ref} className="gx-sb" aria-label="Sidebar" data-gx-sidebar="" role="dialog" aria-modal="true">
         <div className="gx-sb-hd">
           <BrandMark size={30} />
-          <b className="gx-sb-word">GD<span>360</span></b>
+          <b className="gx-sb-word"><Wordmark size={19} /></b>
           <span style={{ flex: 1 }} />
           <button type="button" className="gx-sb-x" onClick={onClose} aria-label="Close the sidebar" data-gx-sb-close="">{GX.close}</button>
         </div>
@@ -1208,6 +1209,7 @@ function SidePanel({ on, workspaceId, wsLabel, initials, name, items, onClose, o
             </Link>
           ))}
         </nav>
+        <Link to="/bin" onClick={onClose} className="gx-sb-i quiet" data-gx-sb-item="bin">{GX.trash}<span>Bin</span></Link>
         <div className="gx-sb-k">Recent</div>
         <div className="gx-sb-recent" data-gx-sb-recent="">
           {recent === null && <><span className="gx-sb-skel" /><span className="gx-sb-skel" /><span className="gx-sb-skel" /></>}
@@ -1370,7 +1372,7 @@ export default function AppSidebar({
               <div className="sep" />
             </>
           )}
-          <div className="hd">More of GD360</div>
+          <div className="hd">More of Euliv</div>
           <button type="button" role="menuitem" onClick={() => go("/ml-models")}>{GX.ml}ML Studio</button>
           <button type="button" role="menuitem" onClick={() => go("/initiatives")}>{GX.target}Initiatives<span className="meta">Pro</span></button>
           <button type="button" role="menuitem" onClick={() => go("/experiments")}>{GX.flask}Experiments</button>

@@ -608,7 +608,7 @@ export default function DataSourceForm({
       const { data } = await api.get(`/datasources/network/outbound-ips${refresh ? "?refresh=true" : ""}`);
       setIpData(data);
     } catch (err: any) {
-      setIpError(err?.response?.data?.detail || "Could not reach GD360's server to detect its outbound address.");
+      setIpError(err?.response?.data?.detail || "Could not reach Euliv's server to detect its outbound address.");
     } finally {
       setIpLoading(false);
     }
@@ -835,7 +835,7 @@ export default function DataSourceForm({
       setConnectBusyProvider(null);
       setConnectError(
         err?.response?.status === 503
-          ? "This connector isn't set up yet - ask whoever manages GD360 to finish its setup."
+          ? "This connector isn't set up yet - ask whoever manages Euliv to finish its setup."
           : err?.response?.data?.detail || "Could not start the sign-in - please try again."
       );
     }
@@ -982,7 +982,7 @@ export default function DataSourceForm({
               with empty slots while only Google Sheets is turned on (see
               VISIBLE_CONNECT_KINDS above). */}
           <div className="text-xs text-muted mb-4 leading-relaxed">
-            Sign in once, and GD360 keeps reading the live spreadsheet itself - no re-uploading when it changes.
+            Sign in once, and Euliv keeps reading the live spreadsheet itself - no re-uploading when it changes.
           </div>
           {connectError && (
             <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-4">{connectError}</div>
@@ -1036,7 +1036,7 @@ export default function DataSourceForm({
         // event.
         <form onSubmit={submitApi} className="space-y-4">
           <div className="text-xs text-muted leading-relaxed">
-            Connects to any REST API that returns JSON - read-only, GET requests only. GD360 fetches it once now to
+            Connects to any REST API that returns JSON - read-only, GET requests only. Euliv fetches it once now to
             confirm it works, and you can refresh it manually any time afterward from the Data Sources page.
           </div>
           <div>
@@ -1089,7 +1089,7 @@ export default function DataSourceForm({
             </div>
           </div>
           <div className="text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
-            Read-only, always. GD360 only ever sends a GET request here, never writes anything back - and your auth
+            Read-only, always. Euliv only ever sends a GET request here, never writes anything back - and your auth
             header value (if any) is encrypted at rest.
           </div>
           <button className="btn-primary" type="submit" disabled={busy || !apiName.trim() || !apiUrl.trim()}>
@@ -1108,7 +1108,7 @@ export default function DataSourceForm({
         // right after (see below).
         <form onSubmit={submitStreaming} className="space-y-4">
           <div className="text-xs text-muted leading-relaxed">
-            Creates a unique webhook URL + secret you paste into whatever system will push events at GD360 -
+            Creates a unique webhook URL + secret you paste into whatever system will push events at Euliv -
             Zapier, a small script, or another app's own outbound webhook setting.
           </div>
           <div>
@@ -1174,7 +1174,7 @@ export default function DataSourceForm({
           {kind === "supabase" && (
             <div className="text-xs text-muted bg-surface2 border border-border rounded-lg p-3 mt-4 leading-relaxed">
               Use Supabase's <strong>Connection pooling</strong> details (Project Settings &rarr; Database &rarr;
-              Connection pooling), not the direct connection - GD360's servers can only reach Supabase through the
+              Connection pooling), not the direct connection - Euliv's servers can only reach Supabase through the
               pooler host (something like <code className="font-mono">aws-0-&lt;region&gt;.pooler.supabase.com</code>,
               port 6543).
             </div>
@@ -1220,7 +1220,7 @@ export default function DataSourceForm({
               </div>
             )}
             <div className="sm:col-span-2 text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
-              Read-only, always. GD360 never modifies your data, and your password is encrypted. Tip: use a
+              Read-only, always. Euliv never modifies your data, and your password is encrypted. Tip: use a
               read-only database user for extra safety.
             </div>
 
@@ -1232,7 +1232,7 @@ export default function DataSourceForm({
                 <ShieldIcon className="w-4 h-4 mt-0.5 shrink-0 text-accent" />
                 <span>
                   Some databases only accept connections from approved IP addresses. If yours does,
-                  whitelist GD360's addresses below.
+                  whitelist Euliv's addresses below.
                 </span>
               </div>
               <button
@@ -1248,7 +1248,7 @@ export default function DataSourceForm({
                 <div className="mt-3 rounded-lg border border-border bg-surface2 p-4">
                   {ipLoading ? (
                     <div className="text-xs text-muted flex items-center gap-2">
-                      <SpinnerIcon className="w-3.5 h-3.5 animate-spin" /> Detecting GD360's live outbound addresses...
+                      <SpinnerIcon className="w-3.5 h-3.5 animate-spin" /> Detecting Euliv's live outbound addresses...
                     </div>
                   ) : ipError ? (
                     <div className="text-xs text-red-400 flex items-center justify-between gap-3">
@@ -1276,7 +1276,7 @@ export default function DataSourceForm({
                       </div>
                       <div className="flex items-center justify-between mt-3 pt-3 border-t border-border">
                         <span className="text-[11px] text-muted">
-                          Live-detected from GD360's own servers
+                          Live-detected from Euliv's own servers
                           {ipData.checked_at ? ` · updated ${timeAgoShort(ipData.checked_at)}` : ""}
                         </span>
                         <button type="button" onClick={() => fetchOutboundIps(true)} className="text-[11px] text-primary font-medium hover:underline">
@@ -1359,7 +1359,7 @@ export default function DataSourceForm({
             rel="noopener noreferrer"
             className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
           >
-            How to connect {connectionKindMeta(warehouseModalKind).label} to GD360
+            How to connect {connectionKindMeta(warehouseModalKind).label} to Euliv
             <ChevronRightIcon className="w-3 h-3" />
           </a>
 
@@ -1411,7 +1411,7 @@ export default function DataSourceForm({
                   <input className="input" type="password" required value={sfPassword} onChange={(e) => setSfPassword(e.target.value)} />
                 </div>
                 <div className="text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
-                  Read-only, always. GD360 only ever runs SELECT queries against Snowflake, and your password is
+                  Read-only, always. Euliv only ever runs SELECT queries against Snowflake, and your password is
                   encrypted at rest. Tip: use the <strong>How to connect Snowflake</strong> guide above to create a
                   dedicated read-only role and user in a couple of minutes, instead of your own login.
                 </div>
@@ -1438,7 +1438,7 @@ export default function DataSourceForm({
                   />
                 </div>
                 <div className="text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
-                  Read-only, always. GD360 only ever runs SELECT queries against BigQuery, and your service account
+                  Read-only, always. Euliv only ever runs SELECT queries against BigQuery, and your service account
                   key is encrypted at rest. Tip: create a service account with only the <strong>BigQuery Data
                   Viewer</strong> and <strong>BigQuery Job User</strong> roles for extra safety.
                 </div>
@@ -1461,7 +1461,7 @@ export default function DataSourceForm({
     {/* ---- "Connected" confirmation: shown right after a successful connect
         or upload, before handing off to the workspace, so the person gets
         real-time confirmation of exactly what they connected and what
-        GD360 can see in it - never a blind jump straight into chat.
+        Euliv can see in it - never a blind jump straight into chat.
         Portaled to document.body for the same reason the database and
         warehouse popouts above are. ---- */}
     {connectedDs && connectedMeta && createPortal(
@@ -1508,8 +1508,8 @@ export default function DataSourceForm({
             <div className="text-sm font-semibold mb-1">Available data</div>
             <div className="text-xs text-muted mb-3 leading-relaxed">
               {connectedTableEntries.length > 0
-                ? "Here's what GD360 found - ask about any of it."
-                : "Connected, but GD360 didn't find any tables to read yet."}
+                ? "Here's what Euliv found - ask about any of it."
+                : "Connected, but Euliv didn't find any tables to read yet."}
             </div>
 
             {connectedTableEntries.length > 0 && (

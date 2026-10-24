@@ -307,7 +307,7 @@ export default function TrainModelWizard({
                 <div>
                   <p className="text-xs text-muted leading-relaxed mb-3">
                     Which column in <span className="font-semibold text-text">{selectedSource?.name}</span> do you
-                    want GD360 to learn to predict?
+                    want Euliv to learn to predict?
                   </p>
                   {columnsError && (
                     <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-3">
@@ -328,7 +328,7 @@ export default function TrainModelWizard({
                     </select>
                   )}
                   <p className="text-[11px] text-muted leading-relaxed mt-3">
-                    GD360 will figure out whether this is a yes/no-style prediction or a number prediction
+                    Euliv will figure out whether this is a yes/no-style prediction or a number prediction
                     automatically from your real data, once training runs - you don&rsquo;t need to know that in
                     advance.
                   </p>
@@ -338,7 +338,7 @@ export default function TrainModelWizard({
               {step === 3 && (
                 <div>
                   <p className="text-xs text-muted leading-relaxed mb-3">
-                    These are the real columns GD360 checked in{" "}
+                    These are the real columns Euliv checked in{" "}
                     <span className="font-semibold text-text">{selectedSource?.name}</span> for predicting{" "}
                     <span className="font-semibold text-text">{targetColumn}</span>. Every one below is checked by
                     default and will be used - uncheck anything that shouldn&rsquo;t count, and pay attention to
@@ -392,7 +392,7 @@ export default function TrainModelWizard({
                       </div>
                       {preview.excluded.length > 0 && (
                         <div className="mt-3 text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
-                          <div className="font-semibold text-text mb-1">Columns GD360 can&rsquo;t use, and why</div>
+                          <div className="font-semibold text-text mb-1">Columns Euliv can&rsquo;t use, and why</div>
                           <ul className="space-y-0.5">
                             {preview.excluded.map((e) => (
                               <li key={e.column}><span className="font-medium text-text">{e.column}</span>: {e.reason}</li>
@@ -402,7 +402,7 @@ export default function TrainModelWizard({
                       )}
                       {preview.task_type === "classification" && (
                         <p className="text-[11px] text-muted leading-relaxed mt-3">
-                          &ldquo;{targetColumn}&rdquo; looks like a yes/no or category-style prediction, so GD360
+                          &ldquo;{targetColumn}&rdquo; looks like a yes/no or category-style prediction, so Euliv
                           can&rsquo;t check for a leak by correlation here the way it can for a number prediction -
                           use your own judgment on any column that feels like it might already know the answer.
                         </p>

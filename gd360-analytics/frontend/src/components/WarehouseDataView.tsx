@@ -564,10 +564,10 @@ export default function WarehouseDataView({
             <strong>This table stays in {kindLabel}.</strong>{" "}
             {profileUsable && totalRows != null ? (
               <>
-                Nothing below was loaded into GD360 — every number comes from {queryCount === 1 ? "one query" : "two queries"} that ran inside your {sourceNoun} over all {totalRows.toLocaleString()} rows{ago ? `, ${ago.line}` : ""}.
+                Nothing below was loaded into Euliv — every number comes from {queryCount === 1 ? "one query" : "two queries"} that ran inside your {sourceNoun} over all {totalRows.toLocaleString()} rows{ago ? `, ${ago.line}` : ""}.
               </>
             ) : (
-              <>Nothing below was loaded into GD360 — the only rows shown are {sampleCount || 20} labelled examples.</>
+              <>Nothing below was loaded into Euliv — the only rows shown are {sampleCount || 20} labelled examples.</>
             )}
           </div>
         </div>

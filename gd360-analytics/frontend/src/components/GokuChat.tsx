@@ -98,8 +98,8 @@ export default function GokuChat({
     onAnalysisModeChange?.(mode);
     markModeAsked();
     const ack = mode === "guided"
-      ? "Got it - I will pause after each step so you can confirm before we move on. You can switch this anytime with the toggle at the top of Ask GD360. Now, what would you like to find out from this data?"
-      : "Got it - I will handle preparation and analysis for you automatically, one step after another, in order. You can switch this anytime with the toggle at the top of Ask GD360. Now, what would you like to find out from this data?";
+      ? "Got it - I will pause after each step so you can confirm before we move on. You can switch this anytime with the toggle at the top of Ask Euliv. Now, what would you like to find out from this data?"
+      : "Got it - I will handle preparation and analysis for you automatically, one step after another, in order. You can switch this anytime with the toggle at the top of Ask Euliv. Now, what would you like to find out from this data?";
     setMessages((m) => [
       ...m,
       { id: "local-mode-ack", role: "assistant", content: ack, action_prompts: null, created_at: new Date().toISOString() },

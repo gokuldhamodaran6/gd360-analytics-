@@ -25,7 +25,7 @@ export function AppGrid({ workspaceId, onConnected }: { workspaceId?: string; on
     <div className="mt-6 pt-6 border-t border-border">
       <h3 className="text-sm font-bold">Apps — synced automatically</h3>
       <p className="text-xs text-muted mt-0.5 mb-3">
-        Sales, analytics and ad accounts. GD360 copies their records on a schedule you choose, so you can ask about them alongside your other data.
+        Sales, analytics and ad accounts. Euliv copies their records on a schedule you choose, so you can ask about them alongside your other data.
       </p>
       <div className="grid gap-2.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>
         {apps.map((a) => {
@@ -106,7 +106,7 @@ export function ConnectAppSheet({
             {app.steps.map((s, i) => <li key={i}>{s}</li>)}
           </ol>
           <p className="text-caption text-muted mt-auto">
-            GD360 only reads. Credentials are encrypted at rest and never shown again after you save them.
+            Euliv only reads. Credentials are encrypted at rest and never shown again after you save them.
           </p>
         </div>
         <div className="flex-1 p-5 sm:p-6 flex flex-col gap-4">
@@ -118,7 +118,7 @@ export function ConnectAppSheet({
             <button type="button" onClick={onClose} disabled={busy} className="text-muted hover:text-text text-xl leading-none" aria-label="Close">×</button>
           </div>
           <label className="flex flex-col gap-1.5 text-ui text-text">
-            Name in GD360
+            Name in Euliv
             <input value={name} onChange={(e) => setName(e.target.value)} className="h-10 rounded-ctl border border-border bg-base px-3 text-ui text-text" />
           </label>
           {app.fields.map((f) => (
