@@ -30,7 +30,7 @@ from ..database import SessionLocal
 from . import ai_meter
 
 EVAL_EMAIL = "nightly-checks@gd360.internal"
-EVAL_NAME = "GD360 nightly checks"
+EVAL_NAME = "Euliv nightly checks"
 SETTING = "quality.nightly"
 _lock = threading.Lock()
 

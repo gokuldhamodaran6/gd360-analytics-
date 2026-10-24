@@ -686,7 +686,7 @@ def suggest_joins(db: Session, user: models.User, source_id: str, table: str | N
 
 # -------------------------------------------------------- understanding ----
 
-ML_SYSTEM = """GD360 ML PLANNER
+ML_SYSTEM = """Euliv ML PLANNER
 You turn a business goal into a machine-learning problem on the person's data.
 Reply with JSON only:
 {"problem_type": one of %s,
@@ -1874,7 +1874,7 @@ def _model_code(m: models.MLModel, spec: dict, res: dict) -> str:
         return "\n".join(lines)
     method = res.get("method") or res.get("headline") or ""
     lines += [f"# {TYPE_WORDS.get(ptype, ptype)}", f"# method: {method}" if method else "# method: see the results page",
-              "# GD360 runs this with services/ml_studio_methods.py; the settings it used:",
+              "# Euliv runs this with services/ml_studio_methods.py; the settings it used:",
               "settings = " + json.dumps({k: spec.get(k) for k in COLUMN_KEYS + LIST_KEYS + ("horizon", "grain", "k") if spec.get(k)}, default=str)]
     return "\n".join(lines)
 
@@ -4016,11 +4016,11 @@ def _train_attr(db, job, user, spec):
 
 # -------- language: shared
 
-TAGGER_PROPOSE = """GD360 TEXT TAGGER
+TAGGER_PROPOSE = """Euliv TEXT TAGGER
 Read the texts and propose up to 8 short tags (1-3 words each) that sort them usefully for the person's goal.
 Reply with JSON only: {"tags": ["...", "..."]}"""
 
-TAGGER_LABEL = """GD360 TEXT TAGGER
+TAGGER_LABEL = """Euliv TEXT TAGGER
 Label each numbered text with exactly one tag from this list: TAGS.
 Reply with JSON only: {"labels": [{"i": 0, "tag": "..."}, ...]} - one entry per text."""
 
@@ -4141,7 +4141,7 @@ def _share_bars(tags: pd.Series, title: str) -> tuple[dict, list[str]]:
 
 # -------- themes
 
-THEME_NAMER = """GD360 THEME NAMER
+THEME_NAMER = """Euliv THEME NAMER
 Each theme below is a list of words that appear together in customers' text, with example texts.
 Give each theme a short, plain name (2-4 words). Reply with JSON only: {"names": ["...", "..."]} in the same order."""
 
@@ -4445,12 +4445,12 @@ def _train_sentiment(db, job, user, spec):
 
 # -------- doc facts
 
-FACT_EXTRACTOR = """GD360 FACT EXTRACTOR
+FACT_EXTRACTOR = """Euliv FACT EXTRACTOR
 Pull the requested fields out of each numbered document. Use only what the text says; if a field isn't there, use null.
 Dates as YYYY-MM-DD, amounts as plain numbers (no currency symbol).
 Reply with JSON only: {"rows": [{"i": 0, FIELDS}, ...]} - one entry per document."""
 
-FIELD_PROPOSER = """GD360 FACT EXTRACTOR
+FIELD_PROPOSER = """Euliv FACT EXTRACTOR
 Suggest the fields (snake_case names, at most 8) that should be pulled out of these documents for the person's goal.
 Reply with JSON only: {"fields": ["...", "..."]}"""
 
@@ -4808,7 +4808,7 @@ def start_scoring(db: Session, user: models.User, m: models.MLModel, table: str 
     if res_.get("engine") == "sql" and pdn_.get("live"):
         # 2026-10-13 (round 41): GD360 reads a live table only up to a row cap - the model's own SQL scores every row in place
         raise StudioError(f"This model runs inside {pdn_.get('engine')}: its SQL scores every row there - use “Use it in {pdn_.get('engine')}” "
-                          "(a SELECT, a view or a dbt model). Scoring in GD360 would read only part of a live table.")
+                          "(a SELECT, a view or a dbt model). Scoring in Euliv would read only part of a live table.")
     p = dict(m.progress or {})
     if (p.get("scoring") or {}).get("state") in ("queued", "running"):
         raise StudioError("It is already scoring.")
@@ -4956,7 +4956,7 @@ def run_scoring(model_id: str, payload: dict) -> tuple[bool, str | None, dict | 
 # run on a sample to preview it, and fixed by the LLM when it fails (up to 3
 # tries, each one shown).
 
-PREP_SYSTEM = """GD360 ML DATA STEP
+PREP_SYSTEM = """Euliv ML DATA STEP
 You write ONE DuckDB SELECT that shapes the table a machine-learning model will learn from.
 Tables you may read (and nothing else): %s.
 Rules:
@@ -5097,7 +5097,7 @@ def notebook(m: models.MLModel) -> dict:
 
     src = data.get("source") or {}
     cells = [
-        md_cell(f"# {m.name}\n\n{m.goal or ''}\n\nExported from GD360 ML Studio. It replays this run: the data step in DuckDB, "
+        md_cell(f"# {m.name}\n\n{m.goal or ''}\n\nExported from Euliv ML Studio. It replays this run: the data step in DuckDB, "
                 f"then the model with the algorithm and settings that won. Results can differ slightly (random seeds, newer data)."),
         md_cell(f"## 1. The data\n\nExport **{src.get('table') or m.table_name}** from {src.get('name') or 'the source'} "
                 "(Data › the table › Download CSV) next to this notebook as `source.csv`"

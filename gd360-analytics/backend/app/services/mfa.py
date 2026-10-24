@@ -16,7 +16,7 @@ import struct
 import time
 from urllib.parse import quote
 
-ISSUER = "GD360"
+ISSUER = "Euliv"
 STEP = 30
 DIGITS = 6
 

@@ -62,7 +62,7 @@ SQL_KINDS = ("postgres", "supabase", "mysql", "sqlserver", "bigquery", "snowflak
 DIALECT_OF = {"postgres": "postgres", "supabase": "postgres", "mysql": "mysql", "sqlserver": "tsql", "bigquery": "bigquery",
               "snowflake": "snowflake", "duckdb": "duckdb"}
 ENGINE_WORDS = {"postgres": "PostgreSQL", "supabase": "Supabase", "mysql": "MySQL", "sqlserver": "SQL Server", "bigquery": "BigQuery",
-                "snowflake": "Snowflake", "duckdb": "GD360's DuckDB sandbox"}
+                "snowflake": "Snowflake", "duckdb": "Euliv's DuckDB sandbox"}
 SUPPORTED_TYPES = ("yes_no", "number")
 HOLDOUT = 20            # % of rows held out for grading
 MAX_NUMERIC = 24        # numbers and dates in the model
@@ -1470,7 +1470,7 @@ def scoring_sql(d: Dialect, glm: SqlGLM, rel: str, out_col: str) -> dict:
     view_name = f"gd360_models.{re.sub(r'[^a-z0-9_]+', '_', out_col.lower())[:60]}"
     create = "CREATE OR ALTER VIEW" if d.d == "tsql" else "CREATE OR REPLACE VIEW"
     view = f"{create} {d.path(view_name)} AS\n{select}"
-    dbt = ("{{ config(materialized='view') }}\n-- A GD360 model, trained in the database. Point the FROM at your dbt source() or ref().\n" + select)
+    dbt = ("{{ config(materialized='view') }}\n-- A Euliv model, trained in the database. Point the FROM at your dbt source() or ref().\n" + select)
     return {"dialect": d.d, "engine": ENGINE_WORDS.get(d.d if d.d != "tsql" else "sqlserver", d.d), "select": select, "view": view, "dbt": dbt,
             "column": out_col, "view_name": view_name, "terms": len(terms)}
 
@@ -1734,11 +1734,11 @@ def routes(ptype: str | None, spec: dict, data: dict, rows_total: int, budget_ro
     elif label_kind == "multiclass":
         why = "The outcome has more than two values - in-database training predicts two. Group them into two in a view, or train on a sample."
     elif spec.get("joins"):
-        why = "Joined tables are combined in GD360's sandbox - in-database training reads one table. Make the join a view in your database, or train on a sample."
+        why = "Joined tables are combined in Euliv's sandbox - in-database training reads one table. Make the join a view in your database, or train on a sample."
     elif mode == "live" and kind not in SQL_KINDS:
         why = f"{ENGINE_WORDS.get(kind, kind)} can't run the training SQL."
     elif mode == "live" and (spec.get("prep_sql") or "").strip():
-        why = "Your data step runs in GD360's sandbox, not in the warehouse. Make it a view in the warehouse and train on that view - or train on a sample."
+        why = "Your data step runs in Euliv's sandbox, not in the warehouse. Make it a view in the warehouse and train on that view - or train on a sample."
     elif est and est.get("why"):
         why = est["why"]
     sampled = rows_total > budget_rows
@@ -1753,14 +1753,14 @@ def routes(ptype: str | None, spec: dict, data: dict, rows_total: int, budget_ro
                 "title": f"Train inside {where}" if mode == "live" else "Train on every row, in SQL",
                 "text": (f"Every one of the {rows_txt} rows, read where it lives. Each step is one SELECT that returns sums and counts - "
                          "not one row leaves." if mode == "live" else
-                         f"Every one of the {rows_txt} rows, in GD360's DuckDB sandbox - no sample. Each step is one SELECT that returns sums and counts."),
+                         f"Every one of the {rows_txt} rows, in Euliv's DuckDB sandbox - no sample. Each step is one SELECT that returns sums and counts."),
                 "model": "Logistic regression" if ptype == "yes_no" else "Linear regression",
                 "gives": ("ROC, precision-recall, calibration, lift and coefficients with confidence intervals - graded on held-out rows "
                           "(the newest 20% when there is a date) - and the model as SQL to run in your own database")},
-        "sample": {"available": True, "where": "GD360",
-                   "title": "Train on a fair sample" if sampled else "Train in GD360",
+        "sample": {"available": True, "where": "Euliv",
+                   "title": "Train on a fair sample" if sampled else "Train in Euliv",
                    "text": (f"A fair sample of {budget_rows:,} of the {rows_txt} rows, with the outcome's balance kept." if sampled
-                            else f"All {rows_txt} rows, read into GD360."),
+                            else f"All {rows_txt} rows, read into Euliv."),
                    "model": "Gradient boosting, random forest and a linear model, tuned",
                    "gives": "The most accurate of three models, with drivers and reasons per row"},
     }
@@ -1787,7 +1787,7 @@ def _open_source(db, user, spec: dict, bench) -> tuple[Source, dict]:
         if ds.kind not in SQL_KINDS:
             raise StudioError(f"{ENGINE_WORDS.get(ds.kind, ds.kind)} can't run the training SQL - train on a sample instead.")
         if (spec.get("prep_sql") or "").strip():
-            raise StudioError("Your data step runs in GD360's sandbox, not in the warehouse - make it a view in the warehouse and train on that view, or train on a sample.")
+            raise StudioError("Your data step runs in Euliv's sandbox, not in the warehouse - make it a view in the warehouse and train on that view, or train on a sample.")
         info["how"] = f"{ENGINE_WORDS.get(ds.kind, ds.kind)} runs every pass; only sums and counts come back"
         return warehouse_source(db, user, ds, entry.get("key") or entry["table"], entry["columns"]), info
     view = "source"
@@ -1799,7 +1799,7 @@ def _open_source(db, user, spec: dict, bench) -> tuple[Source, dict]:
             md.run_select(bench, spec["prep_sql"], {"source"}, out_view="model", step="prepare", title="The table the model learns from (your SQL)")
     except md.DataError as e:
         raise StudioError(f"The data step's SQL didn't run: {e}" if view == "model" else str(e)) from e
-    info["how"] = "every row of the snapshot, in GD360's DuckDB sandbox" + (" (after your data step)" if view == "model" else "")
+    info["how"] = "every row of the snapshot, in Euliv's DuckDB sandbox" + (" (after your data step)" if view == "model" else "")
     info["prep"] = view == "model"
     return duck_source(bench, view, entry.get("key") or entry["table"]), info
 
@@ -1922,7 +1922,7 @@ def _train(db, job, user, spec, bench, st, _m) -> None:
                    f"({split['cutoff_text']} → {split['newest_text']})" if split["how"] == "time" else
                    f"Trained on {n_tr:,} rows; tested on {n_te:,} held out by a fixed hash of {tr.key or 'the row values'}")
     data_code = [{"title": "Where the rows live", "lang": "sql", "engine": engine,
-                  "code": f"-- {info['name']} · {info['table']}\n-- {info['how']}\n-- Every statement below ran inside {engine}; GD360 kept only the sums and counts each returned."}]
+                  "code": f"-- {info['name']} · {info['table']}\n-- {info['how']}\n-- Every statement below ran inside {engine}; Euliv kept only the sums and counts each returned."}]
     data_code += _pass_code(tr.passes, "data", engine) + _pass_code(tr.passes, "scan", engine) + _pass_code(tr.passes, "profile", engine, limit=2)
     lab_vis = ({"type": "bars", "title": f"{target}: rows per outcome",
                 "items": [{"label": v, "value": n, "note": "the outcome to predict" if v == tr.positive else ""} for v, n in vals]}
@@ -1986,7 +1986,7 @@ def _train(db, job, user, spec, bench, st, _m) -> None:
                       leak_vis,
                       {"type": "note", "title": "Why this is enough",
                        "text": f"{len(des.names)} numbers describe the whole model, so every training step is a {len(des.names)}×{len(des.names)} "
-                               f"system GD360 solves in microseconds - the heavy lifting is the SUMs, and {engine} does those over every row."}])
+                               f"system Euliv solves in microseconds - the heavy lifting is the SUMs, and {engine} does those over every row."}])
     job.check_stop()
 
     # 3. training
@@ -2113,7 +2113,7 @@ def _train(db, job, user, spec, bench, st, _m) -> None:
          "note": f"on all {agree.get('rows', 0):,} held-out rows, scored by {engine}", "tone": "good" if ok_db else None},
         {"label": "SQL = Python", "value": (f"to {syn['max_diff']:.0e}" if syn.get("max_diff") is not None else "—"),
          "note": f"on {syn.get('rows', 0)} made-up rows (never your data)" if syn.get("rows") else syn.get("error"), "tone": "good" if ok_syn else None},
-        {"label": "What GD360 keeps", "value": f"{model_bytes:,} bytes", "note": "the coefficients - never a row"}]}, coef_vis]
+        {"label": "What Euliv keeps", "value": f"{model_bytes:,} bytes", "note": "the coefficients - never a row"}]}, coef_vis]
     job.stage("sql", "done", f"One SELECT scores every row in {engine}" + (f" · matches the model to {agree['max_diff']:.0e}" if agree.get("max_diff") is not None else ""),
               code=[{"title": "Score every row (SELECT)", "lang": "sql", "engine": engine, "code": sql_pack["select"] + ";"},
                     {"title": "Keep it as a view", "lang": "sql", "engine": engine, "code": sql_pack["view"] + ";"},

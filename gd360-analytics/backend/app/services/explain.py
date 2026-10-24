@@ -346,7 +346,7 @@ def route_heuristic(question: str) -> str | None:
     return None
 
 
-_ROUTER = """You are the GD360 FOLLOW-UP ROUTER. A person is reading an answer GD360 already computed and typed a follow-up.
+_ROUTER = """You are the Euliv FOLLOW-UP ROUTER. A person is reading an answer Euliv already computed and typed a follow-up.
 Decide whether it can be answered by EXPLAINING the numbers already on screen, or needs a NEW ANALYSIS with new data
 (another breakdown, period, filter, metric, comparison, forecast or anything not in the answer).
 Reply with ONE JSON object only: {"route": "explain"|"analyze", "target": {"kind": "answer"|"visual"|"cause", "index": <int>} | null}"""
@@ -412,7 +412,7 @@ def _guess_target(question: str, ctx: dict) -> dict:
 
 # --------------------------------------------------------------- explaining ----
 
-_EXPLAINER = """You are the GD360 EXPLAINER. Explain numbers GD360 already computed to a busy business reader -
+_EXPLAINER = """You are the Euliv EXPLAINER. Explain numbers Euliv already computed to a busy business reader -
 plainly, like a sharp analyst sitting next to them. Use ONLY numbers that appear in the material (copy them as written).
 Never invent a number, a cause or a comparison that is not in the material. Reply with ONE JSON object only:
 {"headline": "<one sentence: what this shows>",
@@ -540,7 +540,7 @@ def _fallback_cause(c: dict) -> dict:
             tail = f" - {c['share']} of the change." if c.get("share") else "."
         pts.append({"text": f"On its own it accounts for {c['amount']}{tail}", "ref": None})
     if c.get("confidence"):
-        pts.append({"text": f"GD360's confidence in this reason: {c['confidence']}.", "ref": None})
+        pts.append({"text": f"Euliv's confidence in this reason: {c['confidence']}.", "ref": None})
     return {"headline": str(c.get("title") or "This reason"), "points": pts or [{"text": "One of the reasons behind the change.", "ref": None}],
             "takeaway": None, "followups": [], "needs_new_data": False, "new_question": None}
 

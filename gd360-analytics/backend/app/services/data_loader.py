@@ -556,7 +556,7 @@ def warehouse_no_file_message(version, ds=None) -> str:
         owner = getattr(version, "datasource", None)
         kind = getattr(owner, "kind", None)
     provider = _PROVIDER_LABELS.get(kind or "", kind or "data")
-    return f"This table is a saved query that lives in your {provider} warehouse; it has no copy inside GD360."
+    return f"This table is a saved query that lives in your {provider} warehouse; it has no copy inside Euliv."
 
 
 def load_version_dataframe(version: models.DatasetVersion, ds: models.DataSource | None = None) -> pd.DataFrame:

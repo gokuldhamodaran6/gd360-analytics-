@@ -666,7 +666,7 @@ def audit_rows(db: Session, events: list[models.AuditEvent]) -> list[dict]:
         label, cat = action_label(e.action)
         u = users.get(e.actor_user_id)
         out.append({"id": e.id, "at": iso(e.created_at), "action": e.action, "label": label, "category": cat,
-                    "actor": (u.full_name or u.email) if u else "GD360", "actor_email": u.email if u else None,
+                    "actor": (u.full_name or u.email) if u else "Euliv", "actor_email": u.email if u else None,
                     "target_type": e.target_type, "target_id": e.target_id, "what": _describe(e.event_metadata),
                     "metadata": e.event_metadata or {}})
     return out
@@ -702,7 +702,7 @@ def evidence_zip(db: Session, user: models.User, workspace_id: str | None) -> by
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         p = data["posture"]
         z.writestr("README.txt", (
-            f"GD360 Trust Center evidence pack\nWorkspace: {data['workspace']['name']}\n"
+            f"Euliv Trust Center evidence pack\nWorkspace: {data['workspace']['name']}\n"
             f"Generated: {data['generated_at']} by {user.email}\n\n"
             f"Posture: {p['score']}/100 ({p['grade']})\n"
             + "".join(f"  - {d['label']}: {d['score']} ({d['detail']})\n" for d in p["dimensions"])

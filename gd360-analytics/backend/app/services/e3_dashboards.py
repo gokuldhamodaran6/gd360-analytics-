@@ -969,7 +969,7 @@ def friendly_error(text: str | None) -> str:
     if m:
         return f'A column this block needs ("{m.group(1).strip(chr(34))}") is not in the data - it may have been renamed.'
     if "permission" in low or "access denied" in low or "not authorized" in low:
-        return "GD360 is not allowed to read this table with the connection's credentials."
+        return "Euliv is not allowed to read this table with the connection's credentials."
     if "timeout" in low or "timed out" in low:
         return "The data source took too long to answer this block."
     if "does not exist" in low or "not found" in low:

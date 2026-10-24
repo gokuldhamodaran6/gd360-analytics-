@@ -92,7 +92,7 @@ def normalize_hostname(raw: str) -> str:
                           "without moving your website.")
     target = cname_target()
     if h.endswith(".onrender.com") or (target and (h == target or h.endswith("." + target))) or "gd360" in h.split(".")[-2:]:
-        raise DomainError("That address belongs to GD360 itself - use one of your company's own.")
+        raise DomainError("That address belongs to Euliv itself - use one of your company's own.")
     return h
 
 
@@ -115,7 +115,7 @@ def _relative(name: str, hostname: str) -> str:
 def dns_records(dom: models.WorkspaceDomain) -> list[dict]:
     return [
         {"type": "CNAME", "name": dom.hostname, "host": _relative(dom.hostname, dom.hostname), "value": cname_target(),
-         "ok": bool(dom.dns_cname_ok), "purpose": "Sends visitors to GD360"},
+         "ok": bool(dom.dns_cname_ok), "purpose": "Sends visitors to Euliv"},
         {"type": "TXT", "name": txt_name(dom.hostname), "host": _relative(txt_name(dom.hostname), dom.hostname),
          "value": txt_value(dom), "ok": bool(dom.dns_txt_ok), "purpose": "Proves the domain is yours"},
     ]
@@ -257,7 +257,7 @@ def check(db: Session, dom: models.WorkspaceDomain) -> dict:
     except render_domains.RenderDomainsNotConfigured:
         dom.status = "pending_ssl"
         dom.last_error = ("Your records are right. The HTTPS step needs this server's hosting key "
-                          "(RENDER_API_KEY and RENDER_FRONTEND_SERVICE_ID) - ask whoever runs GD360 to add them.")
+                          "(RENDER_API_KEY and RENDER_FRONTEND_SERVICE_ID) - ask whoever runs Euliv to add them.")
         return {"before": before, "after": dom.status, "dns": seen}
     except render_domains.RenderDomainError as e:
         dom.status = "error"
@@ -357,7 +357,7 @@ def normalize_row_rule(raw, schema_columns: set[str]) -> dict | None:
     if not raw:
         return None
     if not isinstance(raw, dict):
-        raise DomainError("That row rule isn't in a shape GD360 understands.")
+        raise DomainError("That row rule isn't in a shape Euliv understands.")
     column = str(raw.get("column") or "").strip()
     if not column:
         return None

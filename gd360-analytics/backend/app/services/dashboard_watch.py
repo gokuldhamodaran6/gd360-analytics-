@@ -685,7 +685,7 @@ def match_metric(text: str, blocks: list[tuple]) -> dict:
     return {}
 
 
-_DRAFTER = """You are the GD360 ALERT DRAFTER. A person looking at a dashboard typed what they want to be alerted about.
+_DRAFTER = """You are the Euliv ALERT DRAFTER. A person looking at a dashboard typed what they want to be alerted about.
 Map it onto the dashboard's number tiles. Reply with ONE JSON object only:
 {"understood": true|false,
  "block_id": "<id of the tile to watch, or the numerator of a ratio>",

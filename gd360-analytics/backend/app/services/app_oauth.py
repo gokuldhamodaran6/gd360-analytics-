@@ -257,7 +257,7 @@ def exchange_code(provider: str, code: str) -> dict:
                     data={"code": code, "client_id": cid, "client_secret": secret, "redirect_uri": ruri,
                           "grant_type": "authorization_code"})
         if not tok.get("refresh_token"):
-            raise OAuthError("Google did not return a long-lived token. Remove GD360 from "
+            raise OAuthError("Google did not return a long-lived token. Remove Euliv from "
                              "myaccount.google.com/permissions and sign in again.")
         return {k: tok.get(k) for k in ("access_token", "refresh_token", "expires_in", "scope") if tok.get(k)}
     if provider == "linkedin":

@@ -107,7 +107,7 @@ class Staff:
 def current_staff(user: models.User = Depends(get_current_user), db: Session = Depends(get_db)) -> Staff:
     role = staff_role(db, user.email)
     if not role:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Mission Control is for the GD360 team only.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Mission Control is for the Euliv team only.")
     perms = set(ROLE_PERMISSIONS[role])
     for g in active_grants(db, user.email):
         perms.add(g.permission)

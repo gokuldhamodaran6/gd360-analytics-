@@ -60,7 +60,7 @@ def normalize(patch: dict, current: dict) -> dict:
     out = dict(current)
     for k, v in (patch or {}).items():
         if k not in DEFAULTS:
-            raise ValueError(f'"{k}" is not a rule GD360 knows.')
+            raise ValueError(f'"{k}" is not a rule Euliv knows.')
         if k == "review_every_days":
             try:
                 n = int(v)

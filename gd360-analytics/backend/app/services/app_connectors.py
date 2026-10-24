@@ -428,7 +428,7 @@ def _meta_token(creds: dict) -> str:
         raise SyncError("A Meta access token is required. Sign in with Facebook again, or paste a token.")
     if len(token) == 32 and all(c in "0123456789abcdefABCDEF" for c in token):
         raise SyncError("That is your Meta App secret, not an access token - it can't read accounts, and it should never "
-                        "be pasted here. Keep it in GD360's server settings (META_APP_SECRET) so Sign in with Facebook "
+                        "be pasted here. Keep it in Euliv's server settings (META_APP_SECRET) so Sign in with Facebook "
                         "works, and reset it in Meta (App settings › Basic) if it has been shared.")
     if "|" in token and not token.startswith(("EA", "IG")):
         raise SyncError("That is an app token (App ID|App secret), which cannot read accounts. Paste a user or system "
@@ -1218,7 +1218,7 @@ def _woo_store(creds: dict) -> str:
     if not raw:
         raise SyncError("The WooCommerce store address is required (e.g. https://shop.example.com).")
     if raw.lower().startswith("http://"):
-        raise SyncError("GD360 only connects to WooCommerce over https, because the API keys are sent with every "
+        raise SyncError("Euliv only connects to WooCommerce over https, because the API keys are sent with every "
                         "request. Use your store's https:// address (and turn on SSL for the store if it is off).")
     if not raw.lower().startswith("https://"):
         raw = "https://" + raw
@@ -2205,9 +2205,9 @@ HELP = {
         ],
         "steps": [
             "You must be an admin of the LinkedIn Page (Page › Admin tools › Manage admins).",
-            "Click Sign in with LinkedIn and allow GD360 to read your Pages' statistics.",
+            "Click Sign in with LinkedIn and allow Euliv to read your Pages' statistics.",
             "Pick which Pages to sync. The organization ID is the number in the Page's admin URL (linkedin.com/company/12345678/admin).",
-            "Note: LinkedIn's Community Management API needs LinkedIn's approval for the GD360 app; if sign-in says the app is not allowed, ask your GD360 admin.",
+            "Note: LinkedIn's Community Management API needs LinkedIn's approval for the Euliv app; if sign-in says the app is not allowed, ask your Euliv admin.",
         ],
     },
     "youtube": {
@@ -2219,8 +2219,8 @@ HELP = {
         ],
         "steps": [
             "Click Sign in with Google using the Google account (or brand account) that owns the channel.",
-            "Allow GD360 to see your YouTube channel and its YouTube Analytics reports (read-only).",
-            "GD360 syncs the channel the sign-in belongs to; for another channel, connect again with that account.",
+            "Allow Euliv to see your YouTube channel and its YouTube Analytics reports (read-only).",
+            "Euliv syncs the channel the sign-in belongs to; for another channel, connect again with that account.",
         ],
     },
     "search_console": {

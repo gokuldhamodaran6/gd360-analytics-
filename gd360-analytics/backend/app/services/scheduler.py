@@ -512,5 +512,9 @@ def start_scheduler() -> None:
     # 2026-10-17 (R52): the nightly quality check on the live model (services/quality.py), 02:10 UTC
     from . import quality
     _scheduler.add_job(quality.nightly_tick, "cron", hour=2, minute=10, id="gd360_nightly_quality", max_instances=1, misfire_grace_time=3600)
+    # 2026-10-24 (R61): the Bin - anything deleted more than 7 days ago is deleted for good, 03:20 UTC and at start-up
+    from . import bin as trash
+    _scheduler.add_job(trash.purge_expired, "cron", hour=3, minute=20, id="euliv_bin_purge", max_instances=1, misfire_grace_time=6 * 3600)
+    _scheduler.add_job(trash.purge_expired, "date", id="euliv_bin_purge_boot")
     _scheduler.start()
     logger.info("[scheduler] started - checking for due dashboard refreshes every 60 seconds.")

@@ -367,7 +367,7 @@ def _google_oauth_token(creds: dict, app: str = "Google") -> str:
     if not refresh:
         raise SyncError(f"{app} needs you to sign in with Google again (no refresh token was saved).")
     if not (client_id and client_secret):
-        raise SyncError(f"{app} sign-in is not set up on this GD360 server (Google OAuth client ID and secret "
+        raise SyncError(f"{app} sign-in is not set up on this Euliv server (Google OAuth client ID and secret "
                         "are missing). Ask your admin, or connect with a service account key instead.")
     r = _post("https://oauth2.googleapis.com/token", data={
         "client_id": client_id, "client_secret": client_secret, "refresh_token": refresh, "grant_type": "refresh_token"})

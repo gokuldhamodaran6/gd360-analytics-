@@ -264,7 +264,7 @@ def fits(shape: dict, chart_type: str) -> tuple[bool, str | None]:
     (False, the one line a disabled tile shows)."""
     ct = normalize_chart_type(chart_type)
     if ct is None:
-        return False, "not a chart type GD360 draws"
+        return False, "not a chart type Euliv draws"
     if ct in ("grouped_bar", "step_line"):
         ct = "bar" if ct == "grouped_bar" else "line"
     t = shape.get("time")
@@ -457,7 +457,7 @@ def resolve(shape: dict, hint: str | None = None, explicit: bool = False) -> dic
     raw = hint
     hint = normalize_chart_type(hint) if hint else None
     if raw and not hint:
-        rec.update({"suggested": str(raw)[:40], "overrode": True, "override_reason": "not a chart type GD360 draws"})
+        rec.update({"suggested": str(raw)[:40], "overrode": True, "override_reason": "not a chart type Euliv draws"})
         return rec
     if not hint:
         return rec
@@ -470,7 +470,10 @@ def resolve(shape: dict, hint: str | None = None, explicit: bool = False) -> dic
     if not ok:
         rec.update({"overrode": True, "override_reason": why})
         return rec
-    if explicit or rec["strength"] == "weak":
+    # R61c: two dimensions have more than one right answer - a 100% stacked bar (the mix inside each group), a pivot
+    # (a matrix with totals) or a treemap are what a BI developer picks as often as a heatmap; a fitting one is kept
+    two_dim_alt = rec["chart_type"] == "heatmap" and plain in ("stacked_bar", "stacked_bar_100", "pivot", "treemap")
+    if explicit or rec["strength"] == "weak" or two_dim_alt:
         label = next((t["label"] for t in CHART_TYPES if t["type"] == plain), plain)
         return {
             "chart_type": hint, "block_type": block_type_for(plain), "strength": "weak",

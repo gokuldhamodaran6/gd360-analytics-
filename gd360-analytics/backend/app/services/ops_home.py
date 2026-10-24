@@ -319,7 +319,7 @@ def collect(scope: Scope) -> list[dict]:
             last["status"] = "failed"
         items.append({
             "key": f"sync:{ds.id}", "kind": "sync", "id": ds.id, "name": ds.name,
-            "detail": f"Copies new {ds.kind.replace('_', ' ').title()} records into GD360",
+            "detail": f"Copies new {ds.kind.replace('_', ' ').title()} records into Euliv",
             "schedule": {"text": SYNC_TEXT.get(interval, "On a schedule"), "interval": interval, "editable": editable,
                          "options": list(SYNC_INTERVALS.keys())},
             "enabled": True, "owner_id": ds.owner_id,

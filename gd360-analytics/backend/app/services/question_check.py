@@ -1880,7 +1880,7 @@ def planner_context(brief: dict | None) -> str:
         lines.append(f"- FORECAST target: {p['start']} to {p['end']} inclusive ({p.get('text') or ''}). That period has little "
                      "or no data yet, so do NOT filter the query to it: fetch the metric's FULL history by month (every "
                      "month the data has, up to its latest date) and use analysis type \"trend\" with the month as "
-                     "time_column. GD360 computes the forecast from that history with a statistical model - never "
+                     "time_column. Euliv computes the forecast from that history with a statistical model - never "
                      "estimate or extrapolate future values in SQL, and never set can_answer to false because the "
                      "target period has no rows yet.")
     elif p and p.get("start") and p.get("end"):
@@ -1891,7 +1891,7 @@ def planner_context(brief: dict | None) -> str:
         lines.append(f"- How the dates were read: {p['assumption']} Put this in \"assumptions\".")
     if p and not p.get("forecast") and (p.get("future") or any(x.get("future") for x in parts)):
         lines.append("- Some of that period hasn't happened yet: also fetch the metric's full history by month (not "
-                     "filtered to the future part) - GD360 forecasts the missing part from it with a statistical model. "
+                     "filtered to the future part) - Euliv forecasts the missing part from it with a statistical model. "
                      "Never treat the missing future rows as zero and never estimate them in SQL.")
     acc = brief.get("accounts")
     if isinstance(acc, dict):

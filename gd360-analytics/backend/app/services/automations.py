@@ -97,7 +97,7 @@ def zone(tz: str | None) -> ZoneInfo:
     try:
         return ZoneInfo(tz or "UTC")
     except (ZoneInfoNotFoundError, ValueError):
-        raise AutomationError(f'"{tz}" is not a time zone GD360 knows - pick one from the list.')
+        raise AutomationError(f'"{tz}" is not a time zone Euliv knows - pick one from the list.')
 
 
 def _hm(text: str | None) -> tuple[int, int]:
@@ -345,7 +345,7 @@ def tell_text(tell: dict) -> str:
     bits = []
     people = tell.get("in_app") or []
     if people:
-        bits.append("GD360 bell" if len(people) == 1 else f"GD360 bell for {len(people)} people")
+        bits.append("Euliv bell" if len(people) == 1 else f"Euliv bell for {len(people)} people")
     emails = tell.get("email") or []
     if emails:
         bits.append(f"email {emails[0]}" if len(emails) == 1 else f"email {len(emails)} people")
@@ -371,7 +371,7 @@ def tell_sentence(tell: dict, threshold: bool = False) -> str:
     bits = []
     people = tell.get("in_app") or []
     if people:
-        bits.append("notify you in GD360" if len(people) == 1 else f"notify {len(people)} people in GD360")
+        bits.append("notify you in Euliv" if len(people) == 1 else f"notify {len(people)} people in Euliv")
     emails = tell.get("email") or []
     if emails:
         bits.append(f"email {emails[0]}" if len(emails) == 1 else f"email {len(emails)} people")
@@ -471,7 +471,7 @@ def _clean_in_app(db: Session, user: models.User, ids) -> list[str]:
     from . import workspace_access
     ids = [str(i) for i in (ids or []) if i][:MAX_IN_APP + 1]
     if len(ids) > MAX_IN_APP:
-        raise AutomationError(f"Up to {MAX_IN_APP} people in GD360 per alert.")
+        raise AutomationError(f"Up to {MAX_IN_APP} people in Euliv per alert.")
     mine = workspace_access.member_workspace_ids(db, user.id)
     out: list[str] = []
     for uid in ids:
@@ -949,7 +949,7 @@ def build_message(db: Session, name: str, tz: str, ctx: dict, failed: str | None
         "kpis": kpis,
         "link": (app_url() + link) if link else None,
         "app_link": link or None,
-        "link_label": ctx.get("link_label") or "Open in GD360",
+        "link_label": ctx.get("link_label") or "Open in Euliv",
         "failed": bool(failed),
         "alert": bool(alert),
         "source_text": ctx.get("subject_name"),
@@ -978,14 +978,14 @@ def email_html(m: dict) -> str:
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center">
 <table role="presentation" width="560" cellspacing="0" cellpadding="0" style="max-width:560px;width:100%;background:#ffffff;border:1px solid #dde3e1;border-radius:14px">
 <tr><td style="padding:22px 24px">
-<div style="font:600 11px ui-monospace,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;color:#6f7c78">GD360</div>
+<div style="font:600 11px ui-monospace,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;color:#6f7c78">Euliv</div>
 <h1 style="margin:8px 0 10px;font-size:18px;line-height:1.3;color:#0b1210">{esc(m.get("title") or "")}</h1>
 <p style="margin:0 0 14px;color:{"#b42318" if m.get("failed") else "#0b1210"};font-size:15px;line-height:1.5">{esc(m.get("headline") or "")}</p>
 {lines}
 {f'<table role="presentation" width="100%" style="margin-top:10px;border-top:1px solid #e7ecea">{rows}</table>' if rows else ""}
 {link}
 </td></tr></table>
-<p style="color:#8a9894;font-size:11px;margin:14px 0 0">Sent by a GD360 automation. Numbers are computed from your data, never written by AI.</p>
+<p style="color:#8a9894;font-size:11px;margin:14px 0 0">Sent by a Euliv automation. Numbers are computed from your data, never written by AI.</p>
 </td></tr></table></body></html>"""
 
 
@@ -1056,7 +1056,7 @@ def slack_payload(m: dict) -> dict:
     elif m.get("kpis"):
         text += "\n" + "\n".join(f"• {k['label']}: *{k['display']}*" + (f" ({k['delta']})" if k.get("delta") else "") for k in m["kpis"])
     if m.get("link"):
-        text += f"\n<{m['link']}|{m.get('link_label') or 'Open in GD360'} →>"
+        text += f"\n<{m['link']}|{m.get('link_label') or 'Open in Euliv'} →>"
     return {"text": text}
 
 
@@ -1072,7 +1072,7 @@ def teams_payload(m: dict) -> dict:
         body.append({"type": "TextBlock", "text": l, "wrap": True, "spacing": "Small"})
     card = {"type": "AdaptiveCard", "$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "version": "1.4", "body": body}
     if m.get("link"):
-        card["actions"] = [{"type": "Action.OpenUrl", "title": m.get("link_label") or "Open in GD360", "url": m["link"]}]
+        card["actions"] = [{"type": "Action.OpenUrl", "title": m.get("link_label") or "Open in Euliv", "url": m["link"]}]
     return {"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": card}]}
 
 
@@ -1137,11 +1137,11 @@ def _notify_in_app(db: Session, tell: dict, message: dict, automation: models.Au
     kind = "reminder" if (alert or {}).get("reminder") else ("alert" if alert else ("failed" if message.get("failed") else "info"))
     body = (alert or {}).get("why") or (" · ".join(message.get("lines") or [])[:600] or None)
     data["source"] = message.get("source_text")
-    notifications.create(db, people, kind=kind, title=message.get("headline") or message.get("subject") or "GD360",
+    notifications.create(db, people, kind=kind, title=message.get("headline") or message.get("subject") or "Euliv",
                          body=body, link=link, data=data, automation_id=automation.id if automation else None,
                          workspace_id=automation.workspace_id if automation else None)
     db.flush()
-    return {"channel": "in_app", "to": f"{len(people)} {'person' if len(people) == 1 else 'people'} in GD360",
+    return {"channel": "in_app", "to": f"{len(people)} {'person' if len(people) == 1 else 'people'} in Euliv",
             "status": "sent", "count": len(people)}
 
 
@@ -1156,7 +1156,7 @@ def deliver(db: Session, owner_id: str, tell: dict, message: dict, automation: m
             out.append(row)
     except Exception as e:  # noqa: BLE001 - recorded on the run, never raised
         db.rollback()
-        out.append({"channel": "in_app", "to": "GD360", "status": "failed", "detail": str(e)[:300]})
+        out.append({"channel": "in_app", "to": "Euliv", "status": "failed", "detail": str(e)[:300]})
     emails = [e for e in tell.get("email") or [] if not notifications.is_muted(tell, email=e)]
     guests = {str(g).lower() for g in tell.get("guests") or []}
     groups = [(emails, message)]
@@ -1303,7 +1303,7 @@ def _threshold_now(db: Session, owner: models.User, trig: dict, suffix: str = ""
     cond = threshold_text(db, trig)
     alert = {"kpi": trig.get("kpi_label") or "The number", "value": val,
              "condition": (f"the alert line ({cond}) is crossed" if met else f"not crossed yet - alerts when {cond}") + suffix}
-    preset = {"kpis": snap.get("kpis") or [], "link": info["link"], "subject_name": info["name"], "link_label": "Open in GD360"}
+    preset = {"kpis": snap.get("kpis") or [], "link": info["link"], "subject_name": info["name"], "link_label": "Open in Euliv"}
     return alert, preset
 
 
@@ -1462,7 +1462,7 @@ def _check_threshold(db: Session, a: models.Automation) -> None:
         a.last_run_at is None or now - a.last_run_at >= timedelta(hours=23, minutes=30))
     if (met and not was) or remind:
         alert = alert_info(db, trig, kpi or {}, val, reminder=bool(remind and was))
-        preset = {"kpis": snap.get("kpis") or [], "link": info["link"], "subject_name": info["name"], "link_label": "Open in GD360"}
+        preset = {"kpis": snap.get("kpis") or [], "link": info["link"], "subject_name": info["name"], "link_label": "Open in Euliv"}
         owner_ = db.get(models.User, a.owner_id)
         execute(db, owner=owner_, name=a.name, tz=a.timezone, steps=a.steps or [], tell=a.tell or {},
                 stop_on_quality_fail=a.stop_on_quality_fail, reason="threshold", automation=a, alert=alert,

@@ -1320,7 +1320,7 @@ def _assert_public_url(url: str) -> None:
         ):
             raise ValueError(
                 "That URL resolves to a private/internal address, which this connector will not fetch "
-                "(GD360 only connects to ordinary public internet APIs)."
+                "(Euliv only connects to ordinary public internet APIs)."
             )
 
 
@@ -1514,7 +1514,7 @@ class GoogleSheetsConnector:
         if resp.status_code == 401:
             raise ValueError("Google Sheets access token was rejected (expired or revoked) - reconnect this data source.")
         if resp.status_code == 403:
-            raise ValueError("GD360 no longer has permission to read this spreadsheet - it may have been unshared, or access revoked in your Google account.")
+            raise ValueError("Euliv no longer has permission to read this spreadsheet - it may have been unshared, or access revoked in your Google account.")
         if resp.status_code == 404:
             raise ValueError("This spreadsheet could not be found - it may have been deleted or moved.")
         resp.raise_for_status()
@@ -1612,7 +1612,7 @@ class MicrosoftExcelConnector:
         if resp.status_code == 401:
             raise ValueError("Microsoft access token was rejected (expired or revoked) - reconnect this data source.")
         if resp.status_code == 403:
-            raise ValueError("GD360 no longer has permission to read this workbook - access may have been revoked in your Microsoft account.")
+            raise ValueError("Euliv no longer has permission to read this workbook - access may have been revoked in your Microsoft account.")
         if resp.status_code == 404:
             raise ValueError("This workbook could not be found - it may have been deleted or moved.")
         resp.raise_for_status()

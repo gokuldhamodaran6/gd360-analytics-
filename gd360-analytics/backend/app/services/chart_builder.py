@@ -499,7 +499,7 @@ def _infer_future_x(x_raw: list, periods: int) -> list:
                     return [d.strftime("%Y-%m") for d in future_dates]
                 return [d.isoformat() for d in future_dates]
 
-    raise ValueError("This chart's x-axis isn't a date or number sequence, so GD360 can't project it forward.")
+    raise ValueError("This chart's x-axis isn't a date or number sequence, so Euliv can't project it forward.")
 
 
 def apply_analysis_overlays(chart_spec: dict, forecast_enabled: bool, anomalies_enabled: bool):
