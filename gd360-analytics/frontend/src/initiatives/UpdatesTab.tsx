@@ -59,7 +59,7 @@ export default function UpdatesTab({ i, reload, onError }: Props) {
   return (
     <div className="flex gap-5 flex-wrap items-start">
       <div className="flex-[2_1_560px] min-w-0 flex flex-col gap-5">
-        <Section title={day === todayIso() ? "Today" : fmtDate(day, true)} sub="Everything that happened on this initiative that day - tracked by GD360 or logged by the team."
+        <Section title={day === todayIso() ? "Today" : fmtDate(day, true)} sub="Everything that happened on this initiative that day - tracked by Euliv or logged by the team."
           actions={<div className="flex items-center gap-1">
             <button type="button" className="btn-secondary text-sm !px-2.5 !py-1.5" onClick={() => setDay(shift(day, -1))} aria-label="Previous day">‹</button>
             <input type="date" className="input !w-auto !py-1.5 text-caption" value={day} max={todayIso()} onChange={(e) => e.target.value && setDay(e.target.value)} aria-label="Day" />

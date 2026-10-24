@@ -36,7 +36,7 @@ export default function OverviewTab({ i, goto, reload, onError }: Props) {
   return (
     <div className="flex gap-5 flex-wrap items-start">
       <div className="flex-[2_1_560px] min-w-0 flex flex-col gap-5">
-        <Section title="Targets" sub="Actual against target, counted from what GD360 tracks." actions={<button type="button" className="text-caption text-primary hover:underline" onClick={() => goto("results")}>All results →</button>}>
+        <Section title="Targets" sub="Actual against target, counted from what Euliv tracks." actions={<button type="button" className="text-caption text-primary hover:underline" onClick={() => goto("results")}>All results →</button>}>
           {i.targets.length === 0 ? <p className="m-0 text-ui text-muted">No targets yet - add them on the Results tab.</p> : (
             <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2" data-overview-targets="">
               {i.targets.map((t) => <Meter key={t.key} t={t} />)}
@@ -123,7 +123,7 @@ export default function OverviewTab({ i, goto, reload, onError }: Props) {
         )}
 
         {i.connected_data.length > 0 && (
-          <Section title="Ask your connected data" sub="Already in GD360 - nothing to set up.">
+          <Section title="Ask your connected data" sub="Already in Euliv - nothing to set up.">
             <div className="flex flex-col gap-2" data-connected-data="">
               {i.connected_data.slice(0, 4).map((c) => (
                 <Link key={c.id} to={askHref(c.id, c.questions[0])} className="ui-focus rounded-ctl border border-border px-3 py-2.5 hover:border-border-strong">

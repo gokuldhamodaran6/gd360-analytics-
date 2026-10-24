@@ -46,7 +46,7 @@ export default function ResultsTab({ i, reload, onError }: Props) {
   return (
     <div className="flex flex-col gap-5">
       {saved && <Banner kind="good" onClose={() => setSaved("")}>{saved}</Banner>}
-      <Section title="Results against targets" sub="Automatic ones are counted by GD360; manual ones are updated by the owner."
+      <Section title="Results against targets" sub="Automatic ones are counted by Euliv; manual ones are updated by the owner."
         actions={i.can_edit ? (edit ? <>
           <button type="button" className="btn-secondary text-sm" onClick={() => { setTargets(i.targets); setEdit(false); }}>Cancel</button>
           <button type="button" className="btn-primary text-sm" onClick={saveTargets}>Save</button>

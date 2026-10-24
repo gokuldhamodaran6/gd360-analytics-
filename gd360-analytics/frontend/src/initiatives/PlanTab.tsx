@@ -5,7 +5,7 @@ import { Banner, CopyField, Field, fmtDate, Section, Sheet, todayIso } from "./u
 
 const RULES: [string, string][] = [
   ["none", "Only by hand (or approval)"], ["post", "A matched post goes out"], ["first_spend", "The first ad spend on its INIT- campaign"],
-  ["page_live", "The landing page gets its first visit"], ["first_registration", "The first registration comes in"], ["email_sent", "A GD360 email goes out"],
+  ["page_live", "The landing page gets its first visit"], ["first_registration", "The first registration comes in"], ["email_sent", "A Euliv email goes out"],
   ["meeting", "A meeting is logged"], ["deal", "A matched deal appears"], ["sessions", "Sessions arrive from its UTM campaign"],
 ];
 
@@ -203,7 +203,7 @@ function TaskSheet({ i, t, onClose, reload, onError }: { i: Initiative; t: Task;
       <div className="border-t border-border pt-4 flex flex-col gap-3" data-approval-panel="">
         <div>
           <div className="text-ui font-semibold text-text">Approval</div>
-          <p className="m-0 text-caption text-muted">Send it to whoever signs off. They decide from a link - no GD360 account needed - and the decision is kept with the version.</p>
+          <p className="m-0 text-caption text-muted">Send it to whoever signs off. They decide from a link - no Euliv account needed - and the decision is kept with the version.</p>
         </div>
         {a && a.state !== "none" && (
           <div className={`rounded-ctl border px-3.5 py-3 flex flex-col gap-1 ${a.state === "approved" ? "border-good-border bg-good-fill" : a.state === "changes" ? "border-danger-border bg-danger-fill" : "border-warning-border bg-warning-fill"}`}>

@@ -53,7 +53,7 @@ export default function TrackingTab({ i, reload, onError }: Props) {
         {pages.length === 0 ? <p className="m-0 text-ui text-muted">No landing pages yet.</p> : <LinkTable i={i} rows={pages} reload={reload} onError={onError} pages />}
       </Section>
 
-      <Section title="Posts, ads and links" sub="Use the GD360 link instead of the raw one: clicks are counted, visits are tagged to this initiative, and only this initiative's posts count - not everything the company publishes."
+      <Section title="Posts, ads and links" sub="Use the Euliv link instead of the raw one: clicks are counted, visits are tagged to this initiative, and only this initiative's posts count - not everything the company publishes."
         actions={i.can_edit ? <button type="button" className="btn-primary text-sm" onClick={() => setAdding("social_post")} data-add-post="">Add post or ad</button> : undefined}>
         {posts.length === 0 ? <p className="m-0 text-ui text-muted">Nothing tracked yet. Add each LinkedIn post, ad or link you share for this initiative.</p> : <LinkTable i={i} rows={posts} reload={reload} onError={onError} />}
         <p className="m-0 text-caption text-muted">Reach and impressions live inside LinkedIn, Instagram and ad managers. Log them in one line on “Today & updates” and pick the post - or connect LinkedIn Pages, Meta Ads or Google Ads under Data sources and ask them directly.</p>

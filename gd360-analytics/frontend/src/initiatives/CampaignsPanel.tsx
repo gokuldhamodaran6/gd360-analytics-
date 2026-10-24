@@ -23,7 +23,7 @@ export default function CampaignsPanel({ workspaceId, initiative, onChanged, onE
   return (
     <div className="flex flex-col gap-5">
       {emailReady === false && (
-        <Banner kind="warning">Email sending isn't switched on for this GD360 server yet (an admin adds RESEND_API_KEY or SMTP settings plus EMAIL_FROM). You can still write campaigns and export them - every message personalised - for HubSpot, Mailchimp, Outlook or any tool.</Banner>
+        <Banner kind="warning">Email sending isn't switched on for this Euliv server yet (an admin adds RESEND_API_KEY or SMTP settings plus EMAIL_FROM). You can still write campaigns and export them - every message personalised - for HubSpot, Mailchimp, Outlook or any tool.</Banner>
       )}
       <Section title="Email campaigns" sub="Personalised per person, sent to the right ICP tier or list, with opens, clicks and unsubscribes tracked back to each account."
         actions={canEdit ? <button type="button" className="btn-primary text-sm" onClick={() => setOpen("new")} data-new-campaign="">New campaign</button> : undefined}>

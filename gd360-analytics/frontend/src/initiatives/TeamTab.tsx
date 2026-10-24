@@ -32,7 +32,7 @@ export default function TeamTab({ i, onError }: Props) {
   return (
     <div className="flex flex-col gap-5">
       {note && <Banner kind="good" onClose={() => setNote("")}>{note}</Banner>}
-      <Section title="Team outreach" sub="Personal invites from LinkedIn, Sales Navigator, email and calls - logged by each person in two taps, plus everything GD360 sees on its own."
+      <Section title="Team outreach" sub="Personal invites from LinkedIn, Sales Navigator, email and calls - logged by each person in two taps, plus everything Euliv sees on its own."
         actions={i.can_edit ? <>
           <button type="button" className="btn-secondary text-sm" onClick={() => setAssigning(true)} disabled={!data?.members.length} data-assign="">Assign accounts</button>
           <button type="button" className="btn-primary text-sm" onClick={() => setAdding(true)} data-add-member="">Add person</button>
@@ -161,7 +161,7 @@ export default function TeamTab({ i, onError }: Props) {
       {adding && data && <MemberSheet i={i} roles={data.roles} onClose={() => setAdding(false)} onSaved={(m) => { setAdding(false); setLinks(m); load(); }} onError={onError} />}
       {assigning && data && <AssignSheet i={i} members={data.members} onClose={() => setAssigning(false)} onDone={(n) => { setAssigning(false); setNote(n); load(); }} onError={onError} />}
       {links && <Sheet open onClose={() => setLinks(null)} title={`${links.name}'s links`}>
-        <p className="m-0 text-ui text-secondary">Send these to {links.name.split(" ")[0]}. No GD360 login needed.</p>
+        <p className="m-0 text-ui text-secondary">Send these to {links.name.split(" ")[0]}. No Euliv login needed.</p>
         <Field label="My invites page - their accounts, two-tap logging" hint="Works on a phone. Keep it private: anyone with it can log for this person."><CopyField value={links.links.page} testId="member-page" /></Field>
         <Field label="Personal registration link" hint="Use it in LinkedIn, Sales Navigator and personal emails. Everyone who registers through it is credited to them automatically."><CopyField value={links.links.invite} testId="member-invite" /></Field>
         {i.can_edit && (
@@ -279,7 +279,7 @@ export function LogSheet({ i, row, data, onClose, onSaved, onError }: { i: Initi
         <option value="">Unassigned</option>{data.members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></Field>
       {(row.history || []).length > 0 && (
         <ol className="m-0 pl-4 text-caption text-secondary flex flex-col gap-1">{(row.history || []).slice().reverse().map((h, k) => (
-          <li key={k}>{fmtDate(h.at)} · {h.auto ? "GD360" : h.by}: {h.to.replace("_", " ")}{h.channel ? ` via ${h.channel.replace("_", " ")}` : ""}{h.note ? ` - ${h.note}` : ""}</li>
+          <li key={k}>{fmtDate(h.at)} · {h.auto ? "Euliv" : h.by}: {h.to.replace("_", " ")}{h.channel ? ` via ${h.channel.replace("_", " ")}` : ""}{h.note ? ` - ${h.note}` : ""}</li>
         ))}</ol>
       )}
     </Sheet>
