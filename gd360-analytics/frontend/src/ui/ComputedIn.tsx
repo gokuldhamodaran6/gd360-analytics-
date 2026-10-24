@@ -30,20 +30,20 @@ const PROVIDER_NAMES: Record<string, string> = {
   postgresql: "Postgres",
   redshift: "Redshift",
   mysql: "MySQL",
-  file: "GD360",
-  files: "GD360",
-  csv: "GD360",
-  excel: "GD360",
-  xlsx: "GD360",
-  upload: "GD360",
-  gd360: "GD360",
-  duckdb: "GD360",
+  file: "Euliv",
+  files: "Euliv",
+  csv: "Euliv",
+  excel: "Euliv",
+  xlsx: "Euliv",
+  upload: "Euliv",
+  gd360: "Euliv",
+  duckdb: "Euliv",
 };
 
 const FILE_RE = /^(file|files|csv|excel|xlsx|upload|gd360|duckdb)$/i;
 
 export function providerDisplayName(provider: string | undefined | null): string {
-  if (!provider) return "GD360";
+  if (!provider) return "Euliv";
   const key = provider.trim().toLowerCase();
   return PROVIDER_NAMES[key] || provider;
 }
