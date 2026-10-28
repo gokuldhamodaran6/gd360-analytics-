@@ -34,7 +34,7 @@ function vals(state: any, setState: (patch: any) => void): any {
     R.menuExpanded = __menu ? "true" : "false";
     R.openMenu = () => setState({ menu: true });
     R.closeMenu = () => setState({ menu: false });
-    R.menuLinks = [{ t: "Product", href: "/#see" }, { t: "Platform", href: "/#platform" }, { t: "Solutions", href: "/#teams" }, { t: "Security", href: "/#security" }, { t: "Pricing", href: "/pricing" }, { t: "About", href: "/about" }].map((x, i) => ({ ...x, cls: "ml" + (i + 1) }));
+    R.menuLinks = [{ t: "Product", href: "/#see" }, { t: "Platform", href: "/#platform" }, { t: "Solutions", href: "/#teams" }, { t: "Security", href: "/#security" }, { t: "About", href: "/about" }].map((x, i) => ({ ...x, cls: "ml" + (i + 1) }));
     return R;
   
 }
@@ -72,9 +72,6 @@ export default function MarketingAbout() {
             </A>
             <A href="/#security" style={{ color: "#A3B0AC" }}>
               {"Security"}
-            </A>
-            <A href="/pricing" style={{ color: "#A3B0AC" }}>
-              {"Pricing"}
             </A>
             <A href="/about" style={{ color: "#E8EEEC", fontWeight: "600" }}>
               {"About"}
@@ -385,7 +382,7 @@ export default function MarketingAbout() {
                 {"We’re looking for people who care about craft, data and honesty in equal measure — engineers, designers and data scientists."}
               </p>
               {" "}
-              <A href={SITE.careersEmail ? "mailto:" + SITE.careersEmail : "/pricing#enterprise"} style={{ fontWeight: "600", fontSize: "15.5px" }}>
+              <A href={SITE.careersEmail ? "mailto:" + SITE.careersEmail : "/start"} style={{ fontWeight: "600", fontSize: "15.5px" }}>
                 {"See open roles →"}
               </A>
               {" "}
@@ -401,7 +398,7 @@ export default function MarketingAbout() {
                 {"We build alongside the teams who use Euliv every day. Join early, shape the roadmap and lock in a founding rate."}
               </p>
               {" "}
-              <A href={SITE.helloEmail ? "mailto:" + SITE.helloEmail : "/pricing#enterprise"} style={{ fontWeight: "600", fontSize: "15.5px" }}>
+              <A href={SITE.helloEmail ? "mailto:" + SITE.helloEmail : "/start"} style={{ fontWeight: "600", fontSize: "15.5px" }}>
                 {"Become a design partner →"}
               </A>
               {" "}
@@ -430,7 +427,7 @@ export default function MarketingAbout() {
               <span style={{ color: "#A3B0AC", fontSize: "15px", lineHeight: "1.6" }}>
                 {"Company-wide roll-out, security review and a live demo on your data."}
               </span>
-              <A href="/pricing#enterprise" style={{ fontWeight: "600" }}>
+              <A href={SITE.helloEmail ? "mailto:" + SITE.helloEmail : "/start"} style={{ fontWeight: "600" }}>
                 {"Book an enterprise demo →"}
               </A>
             </div>
@@ -442,7 +439,7 @@ export default function MarketingAbout() {
               <span style={{ color: "#A3B0AC", fontSize: "15px", lineHeight: "1.6" }}>
                 {"The investor brief and a product walkthrough."}
               </span>
-              <A href={SITE.investorsEmail ? "mailto:" + SITE.investorsEmail : "/pricing#enterprise"} style={{ fontWeight: "600" }}>
+              <A href={SITE.investorsEmail ? "mailto:" + SITE.investorsEmail : "/start"} style={{ fontWeight: "600" }}>
                 {"Request the investor brief →"}
               </A>
             </div>
@@ -454,7 +451,7 @@ export default function MarketingAbout() {
               <span style={{ color: "#A3B0AC", fontSize: "15px", lineHeight: "1.6" }}>
                 {"Integrations, partnerships and media."}
               </span>
-              <A href={SITE.helloEmail ? "mailto:" + SITE.helloEmail : "/pricing#enterprise"} style={{ fontWeight: "600" }}>
+              <A href={SITE.helloEmail ? "mailto:" + SITE.helloEmail : "/start"} style={{ fontWeight: "600" }}>
                 {"Get in touch →"}
               </A>
             </div>
@@ -486,9 +483,6 @@ export default function MarketingAbout() {
             <div style={{ display: "flex", gap: "22px", flexWrap: "wrap", fontSize: "14.5px" }}>
               <A href="/#see" style={{ color: "#A3B0AC" }}>
                 {"Product"}
-              </A>
-              <A href="/pricing" style={{ color: "#A3B0AC" }}>
-                {"Pricing"}
               </A>
               <A href="/about" style={{ color: "#A3B0AC" }}>
                 {"About us"}
@@ -527,8 +521,8 @@ export default function MarketingAbout() {
         {" "}
         <div style={{ position: "fixed", left: "0", right: "0", bottom: "0", zIndex: "40", padding: "10px 16px calc(10px + env(safe-area-inset-bottom, 0px))", background: "rgba(7,9,10,.9)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", borderTop: "1px solid #1F2729", display: "flex", alignItems: "center", gap: "10px" }}>
           {" "}
-          <A href="/pricing" style={{ flex: "1", height: "50px", border: "1px solid #2A3436", borderRadius: "999px", display: "grid", placeItems: "center", color: "#E8EEEC", fontWeight: "600", fontSize: "15px" }}>
-            {"See pricing"}
+          <A href="/#see" style={{ flex: "1", height: "50px", border: "1px solid #2A3436", borderRadius: "999px", display: "grid", placeItems: "center", color: "#E8EEEC", fontWeight: "600", fontSize: "15px" }}>
+            {"See the product"}
           </A>
           {" "}
           <A href="/start" style={{ flex: "1.5", height: "50px", borderRadius: "999px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "700", fontSize: "15.5px", boxShadow: "0 12px 34px -14px rgba(67,229,160,.8)" }}>

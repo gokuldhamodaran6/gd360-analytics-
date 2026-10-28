@@ -61,7 +61,7 @@ function vals(state: any, setState: (patch: any) => void): any {
     R.menuExpanded = __menu ? "true" : "false";
     R.openMenu = () => setState({ menu: true });
     R.closeMenu = () => setState({ menu: false });
-    R.menuLinks = [{ t: "Product", href: "#see" }, { t: "Platform", href: "#platform" }, { t: "Solutions", href: "#teams" }, { t: "Security", href: "#security" }, { t: "Pricing", href: "/pricing" }, { t: "About", href: "/about" }].map((x, i) => ({ ...x, cls: "ml" + (i + 1) }));
+    R.menuLinks = [{ t: "Product", href: "#see" }, { t: "Platform", href: "#platform" }, { t: "Solutions", href: "#teams" }, { t: "Security", href: "#security" }, { t: "About", href: "/about" }].map((x, i) => ({ ...x, cls: "ml" + (i + 1) }));
     R.mSources = [["Snowflake", "Sf", "LIVE"], ["Google Ads", "GA", "SYNCED"], ["GA4", "G4", "SYNCED"], ["Shopify", "Sh", "SYNCED"]].map(([n, m, mode], i) => ({ n, m, mode, cls: "ms" + (i + 1), ink: mode === "LIVE" ? "#43E5A0" : "#7AA7FF" }));
     return R;
   
@@ -101,10 +101,6 @@ export default function MarketingHome() {
             {" "}
             <A href="#security" style={{ color: "#A3B0AC" }}>
               {"Security"}
-            </A>
-            {" "}
-            <A href="/pricing" style={{ color: "#A3B0AC" }}>
-              {"Pricing"}
             </A>
             {" "}
             <A href="/about" style={{ color: "#A3B0AC" }}>
@@ -1298,10 +1294,6 @@ export default function MarketingHome() {
               {"Euliv never writes to your systems and never moves raw rows. Every question keeps its plan, SQL, results and answer together — so any number can be traced months later, by you, your auditor or your board."}
             </p>
             {" "}
-            <A href="/pricing#enterprise" style={{ fontWeight: "600", fontSize: "15.5px" }}>
-              {"Enterprise plans and security review →"}
-            </A>
-            {" "}
           </div>
           {" "}
           <dl style={{ flex: "1 1 620px", margin: "0", borderTop: "1px solid #2A3436" }}>
@@ -1386,8 +1378,8 @@ export default function MarketingHome() {
               <div><A href="/start" className="gd-ea-go">{"Get early access →"}</A></div>
             </div>
             <div className="gd-ea-side">
-              <span className="gd-soon-chip gd-soon-chip-lg"><span className="gd-ea-dot gd-ea-dot-amber"></span>{"PRICING · TO BE ANNOUNCED"}</span>
-              <p className="gd-ea-side-text">{"Plans land soon. Early users hear first."}</p>
+              <span className="gd-soon-chip gd-soon-chip-lg"><span className="gd-ea-dot gd-ea-dot-amber"></span>{"EARLY ACCESS · EVERYTHING INCLUDED"}</span>
+              <p className="gd-ea-side-text">{"Early users shape what Euliv becomes, and hear about every change first."}</p>
               <ul className="gd-ea-list">
                 <li><span>{"Today"}</span><em>{"Everything, free"}</em></li>
                 <li><span>{"Before launch"}</span><em>{"You hear first"}</em></li>
@@ -1479,9 +1471,6 @@ export default function MarketingHome() {
                 </A>
                 <A href="#platform" style={{ color: "#A3B0AC" }}>
                   {"Automations"}
-                </A>
-                <A href="/pricing" style={{ color: "#A3B0AC" }}>
-                  {"Pricing"}
                 </A>
               </div>
               {" "}
