@@ -166,3 +166,17 @@ button.gx-mark:hover { box-shadow: 0 0 0 3px rgb(var(--color-primary) / .18); }
   .gx-acts { flex: 0 0 auto; }
   .gx-crumbs { flex: 100 1 0; }
 }
+
+/* 2026-10-27 (R63): the sidebar opens beside the page on a desktop (the mark, the expand button, any empty part of
+   the rail, or Ctrl+\) and stays open - remembered on this browser - until it is collapsed. Phones keep the drawer. */
+.gx-rail { cursor: default; }
+.gx-rail .gx-spacer { cursor: e-resize; align-self: stretch; }
+.gx-expand { color: rgb(var(--color-faint, var(--color-muted))); }
+.gx-sb.docked {
+  position: sticky; top: 0; left: auto; bottom: auto; height: 100vh; width: 248px; flex: 0 0 248px; max-width: none; z-index: 30;
+  box-shadow: none; animation: gxsbdock .18s cubic-bezier(.2, .8, .2, 1);
+}
+@keyframes gxsbdock { from { opacity: .4; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .gx-sb.docked { animation: none; } }
+@media (max-width: 1023px) { .gx-sb.docked { display: none; } }
+.gx-sb.docked .gx-sb-x { color: rgb(var(--color-muted)); }
