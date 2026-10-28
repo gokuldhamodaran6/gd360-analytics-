@@ -5,7 +5,6 @@ import AdminLogin from "./pages/AdminLogin";
 // R59: the earlier landing page is back as the public homepage (Gokul's call); the R56 one stays at /new-landing
 import MarketingHome from "./marketing/pages/Home";
 import MarketingLandingV2 from "./marketing/v2/Landing";
-import MarketingPricing from "./marketing/v2/Pricing2";
 import MarketingAbout from "./marketing/pages/About";
 import MarketingStart from "./marketing/v2/Start2";
 import Dashboard from "./pages/Dashboard";
@@ -44,21 +43,11 @@ import ConversationPage from "./chat/Conversation";
 import BoardPage from "./board/BoardPage";
 // 2026-10-15 (R51): block documents
 import DocPage from "./doc/DocPage";
-import PlanPage from "./plans/PlanPage";
 import LibraryDocs from "./doc/LibraryDocs";
 import GuidedAnalysis from "./pages/GuidedAnalysis";
 import TalkPage from "./pages/TalkPage";
-import Initiatives from "./pages/Initiatives";
-import InitiativeNew from "./pages/InitiativeNew";
-import InitiativeDetail from "./pages/InitiativeDetail";
-import Accounts from "./pages/Accounts";
-import { ApprovePage, EventRegister, RepPage, WalkInCapture } from "./pages/PublicInitiative";
-import AutopilotSetup from "./pages/AutopilotSetup";
 import Flows from "./pages/Flows";
 import FlowStudio from "./pages/FlowStudio";
-import EventsLanding from "./pages/EventsLanding";
-import { SharedEvent, SignGoal, SponsorPublic, SurveyPage, TicketPage } from "./eventos/PublicPages";
-import StaffApp from "./eventos/StaffApp";
 import ProjectDashboard from "./pages/ProjectDashboard";
 import SpacePage from "./pages/SpacePage";
 import WorkspacePage from "./studio/WorkspacePage";
@@ -148,7 +137,8 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       {/* 2026-10-09: the public website (approved "Euliv Website — Final"
           mockup). "Get started" is the new sign-up flow; /register opens it too. */}
-      <Route path="/pricing" element={<MarketingPricing />} />
+      {/* 2026-10-27 (R63): no plans or prices anywhere while Euliv is in early access - /pricing goes home */}
+      <Route path="/pricing" element={<Navigate to="/" replace />} />
       <Route path="/new-landing" element={<MarketingLandingV2 />} />
       <Route path="/about" element={<MarketingAbout />} />
       <Route path="/start" element={<MarketingStart />} />
@@ -183,24 +173,9 @@ export default function App() {
       <Route path="/g/:projectId" element={<Protected><GuidedAnalysis /></Protected>} />
       {/* 2026-10-11 (round 24): a saved talk with Euliv */}
       <Route path="/v/:talkId" element={<Protected><TalkPage /></Protected>} />
-      {/* 2026-10-10: Initiatives + Accounts, and their public no-login pages */}
-      <Route path="/initiatives" element={<Protected><Initiatives /></Protected>} />
-      <Route path="/initiatives/new" element={<Protected><InitiativeNew /></Protected>} />
-      <Route path="/initiatives/autopilot" element={<Protected><AutopilotSetup /></Protected>} />
-      <Route path="/events" element={<EventsLanding />} />
-      <Route path="/events/app" element={<Protected><Initiatives events /></Protected>} />
-      <Route path="/initiatives/:initiativeId" element={<Protected><InitiativeDetail /></Protected>} />
-      <Route path="/accounts" element={<Protected><Accounts /></Protected>} />
-      <Route path="/e/:token" element={<EventRegister />} />
-      <Route path="/staff/:token" element={<StaffApp />} />
-      <Route path="/t/:code" element={<TicketPage />} />
-      <Route path="/sp/:token" element={<SponsorPublic />} />
-      <Route path="/f/:token" element={<SurveyPage />} />
-      <Route path="/x/:token" element={<SharedEvent />} />
-      <Route path="/sign/:token" element={<SignGoal />} />
-      <Route path="/w/:token" element={<WalkInCapture />} />
-      <Route path="/a/:token" element={<ApprovePage />} />
-      <Route path="/r/:token" element={<RepPage />} />
+      {/* 2026-10-27 (R63): Initiatives (with Events, Accounts and Autopilot) is removed from Euliv. Old links go home. */}
+      {["/initiatives", "/initiatives/*", "/events", "/events/*", "/accounts", "/e/:token", "/staff/:token", "/t/:code", "/sp/:token", "/f/:token",
+        "/x/:token", "/sign/:token", "/w/:token", "/a/:token", "/r/:token"].map((path) => <Route key={path} path={path} element={<Navigate to="/" replace />} />)}
       <Route path="/project-dashboards/:dashboardId" element={<Protected><ProjectDashboard /></Protected>} />
       {/* 2026-10-09 (round 15): one Space - channel hub / overview. */}
       <Route path="/spaces/:id" element={<Protected><SpacePage /></Protected>} />
@@ -274,7 +249,7 @@ export default function App() {
       {/* 2026-10-10 (round 19): Governance became the Trust Center. */}
       <Route path="/governance" element={<RedirectKeepingQuery to="/trust" />} />
       <Route path="/trust" element={<Protected><TrustCenter /></Protected>} />
-      <Route path="/settings/plan" element={<Protected><PlanPage /></Protected>} />
+      <Route path="/settings/plan" element={<Navigate to="/settings" replace />} />
       <Route path="/settings" element={<Protected><SettingsPage /></Protected>} />
       <Route path="/settings/:section" element={<Protected><SettingsPage /></Protected>} />
       <Route path="/settings/domains" element={<Protected><DomainSettings /></Protected>} />
