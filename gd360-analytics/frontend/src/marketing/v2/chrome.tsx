@@ -21,7 +21,6 @@ export function SiteNav() {
           <A href="/#proof">Why trust it</A>
           <A href="/#sources">Sources</A>
           <A href="/#security">Security</A>
-          <A href="/pricing">Pricing</A>
           <A href="/about">About</A>
         </nav>
         <span className="mk2-sp" />
@@ -48,7 +47,7 @@ export function SiteFoot() {
             <A href="/" className="mk2-logo"><Mark size={22} /><Wordmark size={16} tone="deep" /></A>
             <p style={{ color: "var(--ink3)", fontSize: 13.5, lineHeight: 1.6, marginTop: 12, maxWidth: 280 }}>Ask your data in plain words and see every step behind the answer.</p>
           </div>
-          <div><b>Product</b><A href="/#how">How it works</A><A href="/#proof">Proof on every number</A><A href="/#sources">Sources</A><A href="/pricing">Pricing</A></div>
+          <div><b>Product</b><A href="/#how">How it works</A><A href="/#proof">Proof on every number</A><A href="/#sources">Sources</A></div>
           <div><b>Company</b><A href="/about">About</A>{mail && <a href={`mailto:${mail}`}>Contact</a>}</div>
           <div><b>Trust</b><A href="/#security">Security</A><A href="/privacy">Privacy</A></div>
           <div><b>Get going</b><A href="/start">Start free</A><A href="/login">Sign in</A></div>

@@ -62,7 +62,7 @@ const DO: [string, string, string][] = [
 const MORE: [string, string][] = [
   ["Pipelines", "Clean and join data on a schedule. Each run is checked before it replaces anything."],
   ["Alerts", "Hear when a number moves, with the reason attached, by email or in the app."],
-  ["Initiatives", "Track a goal across teams. Euliv keeps the evidence and flags what needs a decision."],
+  ["Documents", "Write an answer up as a report. Every number in it links back to the query that made it."],
 ];
 const SOURCES = ["Shopify", "WooCommerce", "Stripe", "Google Ads", "Meta Ads", "Google Analytics 4", "Search Console", "HubSpot", "Klaviyo", "Instagram", "YouTube", "LinkedIn Pages", "WhatsApp Business", "PostgreSQL", "MySQL", "SQL Server", "Supabase", "BigQuery", "Snowflake", "Redshift", "CSV and Excel files"];
 
@@ -140,7 +140,6 @@ export default function Landing() {
             <p>Make an account, connect one source or a file, and ask. Free while we are in early access.</p>
           </div>
           <A href="/start" className="mk2-btn pri lg">Start free</A>
-          <A href="/pricing" className="mk2-btn sec lg">See pricing</A>
         </div>
       </section>
     </Site>

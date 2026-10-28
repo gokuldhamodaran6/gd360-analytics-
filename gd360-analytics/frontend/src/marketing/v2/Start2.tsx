@@ -25,7 +25,7 @@ const CONNECT: [string, string, string][] = [
   ["hubspot", "HubSpot", "Contacts, deals, pipeline"],
   ["meta_ads", "Meta Ads", "Facebook and Instagram ads"],
   ["db", "A database", "PostgreSQL, MySQL, BigQuery, Snowflake…"],
-  ["file", "A file", "CSV or Excel, up to the plan's size"],
+  ["file", "A file", "CSV or Excel"],
 ];
 const QUESTIONS: Record<string, string[]> = {
   shopify: ["Which products sold best last month?", "How many customers came back for a second order?", "Why did revenue change this week?"],
