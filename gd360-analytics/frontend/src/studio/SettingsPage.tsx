@@ -1,22 +1,20 @@
 // 2026-10-19 (R56, admin board "Settings"): one Settings page with its own navigation - the workspace (general,
-// members), security (sign-in and two-step, workspace policies, the audit log) and the plan. Every switch here is a
+// members), security (sign-in and two-step, workspace policies, the audit log). R63: no plan section during early access. Every switch here is a
 // real setting the backend enforces; what GD360 does not do yet (SAML single sign-on, SCIM) is said plainly.
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
 import { workspaceApi, type WorkspaceDetail } from "../api/client";
 import { trustApi, type AuditEvent, type Policies } from "../api/ops";
-import { v2Api, type PlanSummary } from "../api/v2";
 import { TwoStepSection } from "../components/TwoStepSection";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { Ic } from "./icons";
 import { fmtWhen, ListPage } from "./Page";
 
-type Sec = "general" | "members" | "authentication" | "policies" | "audit" | "usage";
+type Sec = "general" | "members" | "authentication" | "policies" | "audit";
 const NAV: { group: string; items: { id: Sec; label: string }[] }[] = [
   { group: "Workspace", items: [{ id: "general", label: "General" }, { id: "members", label: "Members" }] },
   { group: "Security", items: [{ id: "authentication", label: "Authentication" }, { id: "policies", label: "Policies" }, { id: "audit", label: "Audit log" }] },
-  { group: "Billing", items: [{ id: "usage", label: "Plan and usage" }] },
 ];
 const TITLE: Record<Sec, [string, string]> = {
   general: ["General", "The workspace's name and what is in it."],
@@ -24,7 +22,6 @@ const TITLE: Record<Sec, [string, string]> = {
   authentication: ["Authentication", "How people sign in, and the second step that protects an account."],
   policies: ["Policies", "Rules for everyone in this workspace. Changes are written to the audit log."],
   audit: ["Audit log", "Every sign-in, export, share, agent action and setting change, newest first."],
-  usage: ["Plan and usage", "What this workspace's plan includes and how much of it is used this month."],
 };
 
 function Card({ title, sub, right, children }: { title: string; sub?: string; right?: ReactNode; children?: ReactNode }) {
@@ -65,7 +62,6 @@ export default function SettingsPage() {
   const [detail, setDetail] = useState<WorkspaceDetail | null>(null);
   const [policies, setPolicies] = useState<Policies | null>(null);
   const [audit, setAudit] = useState<{ events: AuditEvent[]; total: number } | null>(null);
-  const [plan, setPlan] = useState<PlanSummary | null>(null);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [name, setName] = useState("");
@@ -79,7 +75,6 @@ export default function SettingsPage() {
     setErr(""); setMsg("");
     if (sec === "policies" || sec === "authentication") trustApi.overview(activeWorkspaceId).then((o) => setPolicies(o.policies)).catch((e) => setErr(e?.response?.data?.detail || "Only an owner or admin can see the policies."));
     if (sec === "audit") trustApi.audit(activeWorkspaceId, { page: 1 }).then((a: any) => setAudit({ events: a.events, total: a.total })).catch((e) => setErr(e?.response?.data?.detail || "Only an owner or admin can read the audit log."));
-    if (sec === "usage") v2Api.plan().then(setPlan).catch(() => setPlan(null));
   }, [sec, activeWorkspaceId]);
 
   const setPolicy = async (k: keyof Policies, v: any) => {
@@ -191,17 +186,6 @@ export default function SettingsPage() {
             </Card>
           )}
 
-          {sec === "usage" && (
-            <Card title={plan ? `${plan.label} plan` : "Plan"} sub={plan?.who} right={<Link to="/settings/plan" className="sd-btnp">Change plan</Link>}>
-              {(plan?.meters || []).map((m) => (
-                <Row key={m.key} title={m.label} sub={m.limit == null ? "No limit on this plan" : `${m.used.toLocaleString()} of ${m.limit.toLocaleString()}`}
-                  right={m.limit != null ? <span style={{ width: 180, height: 8, borderRadius: 4, background: "rgb(var(--color-surface2))", overflow: "hidden", display: "inline-block" }}>
-                    <i style={{ display: "block", height: "100%", width: `${Math.min(100, (m.used / Math.max(1, m.limit)) * 100)}%`, background: m.over ? "rgb(var(--sd-bad))" : m.near ? "rgb(var(--sd-warn))" : "rgb(var(--color-primary))" }} /></span>
-                    : <span className="sd-mono">{m.used.toLocaleString()}</span>} />
-              ))}
-              {!plan && <div className="sd-empty">Reading the plan…</div>}
-            </Card>
-          )}
           <span className="sd-note">Changes here are recorded in the audit log with who made them. <Ic n="shield" s={13} /></span>
         </div>
       </div>

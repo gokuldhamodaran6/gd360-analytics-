@@ -17,7 +17,7 @@ type Tab = "all" | Item["type"];
 const TYPES: { id: Item["type"]; label: string; one: string; icon: string }[] = [
   { id: "answer", label: "Answers", one: "Answer", icon: "chat" }, { id: "dashboard", label: "Dashboards", one: "Dashboard", icon: "grid" },
   { id: "pipeline", label: "Pipelines", one: "Pipeline", icon: "flow" }, { id: "model", label: "Models", one: "Model", icon: "chip" },
-  { id: "report", label: "Reports", one: "Report", icon: "doc" }, { id: "initiative", label: "Initiatives", one: "Initiative", icon: "flag" },
+  { id: "report", label: "Reports", one: "Report", icon: "doc" },
 ];
 const PAGE = 25;
 
@@ -76,7 +76,7 @@ export default function WorkspacePage() {
   }, [items, tab, space, owner, status, q, sort]);
   const shown = rows.slice(page * PAGE, page * PAGE + PAGE);
   const tabs = [{ id: "all" as Tab, label: "All", n: data?.total ?? null }, ...TYPES.map((t) => ({ id: t.id as Tab, label: t.label, n: data ? data.counts[t.id] || 0 : null }))];
-  const one = (t: Item["type"]) => TYPES.find((x) => x.id === t)!;
+  const one = (t: Item["type"]) => TYPES.find((x) => x.id === t) || TYPES[0];
 
   return (
     <ListPage data="workspace" crumbs={[{ label: "Library" }]}>
