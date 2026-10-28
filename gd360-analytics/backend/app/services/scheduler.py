@@ -456,29 +456,8 @@ def _tick() -> None:
             logger.warning("[scheduler] flows tick failed: %s", e)
             db.rollback()
 
-        # 2026-10-10 (Initiatives): due reminders and scheduled campaigns.
-        from .initiatives.reminders import tick as initiatives_tick
-        try:
-            initiatives_tick(db, datetime.utcnow())
-        except Exception as e:  # noqa: BLE001 - never stops the loop
-            logger.warning("[scheduler] initiatives tick failed: %s", e)
-            db.rollback()
-
-        # 2026-10-13 (round 42): Event OS - posts about live events, every 6 hours.
-        from .eventos.jobs import tick as eventos_tick
-        try:
-            eventos_tick(db, datetime.utcnow())
-        except Exception as e:  # noqa: BLE001 - never stops the loop
-            logger.warning("[scheduler] event scans failed: %s", e)
-            db.rollback()
-
-        # 2026-10-17 (R53): Initiatives Autopilot - evidence, task closes, snapshots, digests, webinar 360.
-        from .autopilot import tick as autopilot_tick
-        try:
-            autopilot_tick(db, datetime.utcnow())
-        except Exception as e:  # noqa: BLE001 - never stops the loop
-            logger.warning("[scheduler] autopilot tick failed: %s", e)
-            db.rollback()
+        # R63 (2026-10-27): Initiatives (reminders, campaigns, Event OS posts, Autopilot) was removed from Euliv -
+        # nothing of it runs on the clock any more.
 
         # 2026-10-10 (round 19): company-domain viewers' Monday emails.
         from .domains import send_due_subscriptions

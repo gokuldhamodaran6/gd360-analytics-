@@ -136,22 +136,8 @@ def workspace_items(db: Session, user: models.User, workspace_id: str | None) ->
     except Exception as e:  # noqa: BLE001
         errors.append(f"reports: {e}")
 
-    # initiatives
-    try:
-        if workspace_id:
-            from .initiatives import metrics
-            for x in metrics.hub(db, user, workspace_id).get("initiatives") or []:
-                h = x.get("health") or {}
-                items.append({"id": x["id"], "type": "initiative", "name": x.get("title") or "Initiative", "link": f"/initiatives/{x['id']}",
-                              "space": x.get("department"), "owner_id": x.get("owner_id"),
-                              "status": {"text": {"active": "Live", "planning": "Planning", "done": "Finished"}.get(x.get("status"), x.get("status")),
-                                         "tone": "blue" if x.get("status") == "active" else "muted"},
-                              "proof": {"text": h.get("label") or h.get("state") or "", "tone": "bad" if h.get("state") == "risk" else "good"} if h else None,
-                              "updated_at": _iso(x.get("updated_at")), "views": None, "mine": x.get("owner_id") == user.id})
-                if x.get("owner_id"):
-                    owners.add(x["owner_id"])
-    except Exception as e:  # noqa: BLE001
-        errors.append(f"initiatives: {e}")
+    # R63 (2026-10-27): Initiatives was removed from Euliv - the Library lists answers, dashboards, pipelines,
+    # models and reports only.
 
     names = _people(db, {o for o in owners if o})
     for it in items:
