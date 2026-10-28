@@ -514,7 +514,7 @@ def _do_dashboard_warehouse(db: Session, msg: models.Message, user: models.User,
         _set_state(db, msg, status="failed", error=str(e.detail), finished_at=datetime.utcnow().isoformat() + "Z")
         return
     artifact = {"type": "dashboard", "id": dash.id, "name": dash.name, "url": f"/dashboard-builder/{dash.id}",
-                "page_id": page_ids[0] if page_ids else None, "live": True}
+                "page_id": page_ids[0] if page_ids else None, "live": {"label": f"computed in {ds.name}"}}
     _written_title(db, conv, st.get("question") or "", dash.name)
     _set_state(db, msg, status="done", artifacts=[artifact],
                text=f"“{dash.name}” is on the right, computed live in {ds.name}: every number is a query run in your warehouse, "
