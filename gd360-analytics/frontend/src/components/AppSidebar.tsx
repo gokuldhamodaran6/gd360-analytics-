@@ -1107,6 +1107,9 @@ const GX = {
   globe: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z" /></svg>,
   check: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>,
   close: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>,
+  // R63: expand / collapse the sidebar (a panel with its left column)
+  sideOpen: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3" /><path d="M9 4v16M13 10l2 2-2 2" /></svg>,
+  sideClose: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3" /><path d="M9 4v16M16 10l-2 2 2 2" /></svg>,
   invite: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="10" cy="8" r="3.5" /><path d="M3.5 20a6.5 6.5 0 0 1 13 0M19 8v6M16 11h6" /></svg>,
 };
 
@@ -1122,7 +1125,6 @@ export function railActive(pathname: string): string {
   if (p.startsWith("/data") || p.startsWith("/spaces") || p.startsWith("/connect")) return "data";
   if (p.startsWith("/automations") || p.startsWith("/automate") || p.startsWith("/jobs")) return "automations";
   if (p.startsWith("/ml-") || p.startsWith("/ml/") || p.startsWith("/models")) return "models";
-  if (p.startsWith("/initiatives") || p.startsWith("/events/app")) return "initiatives";
   if (p.startsWith("/profile") || p.startsWith("/settings")) return "settings";
   return "more";
 }
@@ -1161,77 +1163,116 @@ function MenuPanel({ menu, onClose, children, label }: { menu: NonNullable<RailM
 export const OPEN_SIDEBAR_EVENT = "gx:open-sidebar";
 export const openSidebar = () => window.dispatchEvent(new Event(OPEN_SIDEBAR_EVENT));
 
-function SidePanel({ on, workspaceId, wsLabel, initials, name, items, onClose, onWorkspace }: {
+// R63: the sidebar can stay open beside the page (docked) on a desktop. The choice is remembered on this browser.
+const PIN_KEY = "eu_sidebar_open";
+const PIN_EVENT = "eu:sidebar-pin";
+const WIDE = "(min-width: 1024px)";
+function readPin(): boolean { try { return localStorage.getItem(PIN_KEY) === "1"; } catch { return false; } }
+function writePin(v: boolean) {
+  try { localStorage.setItem(PIN_KEY, v ? "1" : "0"); } catch { /* storage blocked: the choice lasts this page only */ }
+  window.dispatchEvent(new CustomEvent(PIN_EVENT, { detail: v }));
+}
+function useWide(): boolean {
+  const [wide, setWide] = useState(() => typeof window !== "undefined" && !!window.matchMedia?.(WIDE).matches);
+  useEffect(() => {
+    const mq = window.matchMedia?.(WIDE);
+    if (!mq) return;
+    const on = () => setWide(mq.matches);
+    mq.addEventListener?.("change", on);
+    return () => mq.removeEventListener?.("change", on);
+  }, []);
+  return wide;
+}
+// the recent questions and the "needs you" count, kept for a minute so the docked sidebar doesn't flicker on every page
+let sbCache: { ws: string; at: number; recent: ConversationRow[] | null; needs: number } | null = null;
+
+function SidePanel({ on, workspaceId, wsLabel, initials, name, items, onClose, onWorkspace, docked = false }: {
   on: string; workspaceId: string; wsLabel: string; initials: string; name: string;
   items: { key: string; label: string; to: string; icon: React.ReactNode }[];
   onClose: () => void; onWorkspace: (el: HTMLElement) => void;
+  /** R63: open beside the page instead of over it - links don't close it, Esc doesn't either */
+  docked?: boolean;
 }) {
   const ref = useRef<HTMLElement>(null);
-  const [recent, setRecent] = useState<ConversationRow[] | null>(null);
-  const [needs, setNeeds] = useState(0);
+  const cached = sbCache && sbCache.ws === workspaceId ? sbCache : null;
+  const [recent, setRecent] = useState<ConversationRow[] | null>(cached ? cached.recent : null);
+  const [needs, setNeeds] = useState(cached ? cached.needs : 0);
   const { pathname } = useLocation();
   useEffect(() => {
     let live = true;
-    v2Api.list(workspaceId || null).then((r) => live && setRecent(r.slice(0, 6))).catch(() => live && setRecent([]));
-    Promise.all([
+    if (sbCache && sbCache.ws === workspaceId && Date.now() - sbCache.at < 60_000 && sbCache.recent) return;
+    const r = v2Api.list(workspaceId || null).then((rows) => rows.slice(0, 6)).catch(() => [] as ConversationRow[]);
+    const n = Promise.all([
       opsApi.overview(workspaceId || null).then((o) => (o.attention || []).length).catch(() => 0),
       flowsApi.list(workspaceId || null).then((f) => f.filter((x) => x.needs_fix).length).catch(() => 0),
-    ]).then(([a, b]) => live && setNeeds(a + b));
+    ]).then(([a, b]) => a + b);
+    void Promise.all([r, n]).then(([rows, k]) => {
+      sbCache = { ws: workspaceId, at: Date.now(), recent: rows, needs: k };
+      if (live) { setRecent(rows); setNeeds(k); }
+    });
     return () => { live = false; };
   }, [workspaceId]);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useEffect(() => {
+    if (docked) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeRef.current(); };
     document.addEventListener("keydown", onKey);
     // focus the first thing in the panel, and give it back to the mark on close
     const back = document.activeElement as HTMLElement | null;
     ref.current?.querySelector<HTMLElement>("[data-gx-sb-new]")?.focus({ preventScroll: true });
     return () => { document.removeEventListener("keydown", onKey); if (back && document.contains(back)) back.focus({ preventScroll: true }); };
-  }, []);
+  }, [docked]);
   const convId = pathname.startsWith("/chat/") ? pathname.split("/")[2] : "";
-  return createPortal(
-    <>
-      <div className="gx-sb-dim" onClick={onClose} aria-hidden="true" data-gx-sb-dim="" />
-      <aside ref={ref} className="gx-sb" aria-label="Sidebar" data-gx-sidebar="" role="dialog" aria-modal="true">
+  const leave = docked ? undefined : onClose;
+  const body = (
+      <aside ref={ref} className={`gx-sb${docked ? " docked" : ""}`} aria-label="Sidebar" data-gx-sidebar={docked ? "docked" : ""}
+        role={docked ? undefined : "dialog"} aria-modal={docked ? undefined : true}>
         <div className="gx-sb-hd">
           <BrandMark size={30} />
           <b className="gx-sb-word"><Wordmark size={19} /></b>
           <span style={{ flex: 1 }} />
-          <button type="button" className="gx-sb-x" onClick={onClose} aria-label="Close the sidebar" data-gx-sb-close="">{GX.close}</button>
+          <button type="button" className="gx-sb-x" onClick={onClose} aria-label={docked ? "Collapse the sidebar" : "Close the sidebar"}
+            title={docked ? "Collapse the sidebar (Ctrl+\\)" : "Close"} data-gx-sb-close="">{docked ? GX.sideClose : GX.close}</button>
         </div>
-        <Link to="/chat" className="gx-sb-new" onClick={onClose} data-gx-sb-new="">{GX.plus}New question</Link>
+        <Link to="/chat" className="gx-sb-new" onClick={leave} data-gx-sb-new="">{GX.plus}New question</Link>
         <nav className="gx-sb-nav" aria-label="Places">
           {items.map((it) => (
-            <Link key={it.key} to={it.to} onClick={onClose} className={`gx-sb-i${on === it.key ? " on" : ""}`} aria-current={on === it.key ? "page" : undefined} data-gx-sb-item={it.key}>
+            <Link key={it.key} to={it.to} onClick={leave} className={`gx-sb-i${on === it.key ? " on" : ""}`} aria-current={on === it.key ? "page" : undefined} data-gx-sb-item={it.key}>
               {it.icon}<span>{it.label}</span>
               {it.key === "automations" && needs > 0 && <span className="gx-sb-badge" aria-label={`${needs} need you`} data-gx-sb-needs="">{needs}</span>}
             </Link>
           ))}
         </nav>
-        <Link to="/bin" onClick={onClose} className="gx-sb-i quiet" data-gx-sb-item="bin">{GX.trash}<span>Bin</span></Link>
+        <Link to="/bin" onClick={leave} className={`gx-sb-i quiet${pathname === "/bin" ? " on" : ""}`} data-gx-sb-item="bin">{GX.trash}<span>Bin</span></Link>
         <div className="gx-sb-k">Recent</div>
         <div className="gx-sb-recent" data-gx-sb-recent="">
           {recent === null && <><span className="gx-sb-skel" /><span className="gx-sb-skel" /><span className="gx-sb-skel" /></>}
           {recent && !recent.length && <span className="gx-sb-none">Your questions will show here.</span>}
           {recent?.map((c) => (
-            <Link key={c.id} to={`/chat/${c.id}`} onClick={onClose} className={`gx-sb-rc${c.id === convId ? " on" : ""}`} title={c.title}>{c.title || "Untitled"}</Link>
+            <Link key={c.id} to={`/chat/${c.id}`} onClick={leave} className={`gx-sb-rc${c.id === convId ? " on" : ""}`} title={c.title}>{c.title || "Untitled"}</Link>
           ))}
-          {!!recent?.length && <Link to="/library" onClick={onClose} className="gx-sb-rc all">See all in Library</Link>}
+          {!!recent?.length && <Link to="/library" onClick={leave} className="gx-sb-rc all">See all in Library</Link>}
         </div>
         <span style={{ flex: 1, minHeight: 12 }} />
         {eulivAvailable() && (
-          <button type="button" className="gx-sb-i" onClick={() => { onClose(); openEuliv(); }} data-gx-sb-euliv="">
+          <button type="button" className="gx-sb-i" onClick={() => { leave?.(); openEuliv(); }} data-gx-sb-euliv="">
             {GX.mic}<span className="two">Talk to Euliv<small>or say “Hi Euliv” on Home</small></span>
             <span className="gx-sb-live" aria-hidden="true" />
           </button>
         )}
-        <Link to="/settings" onClick={onClose} className={`gx-sb-i${on === "settings" ? " on" : ""}`}>{GX.gear}<span>Settings</span></Link>
+        <Link to="/settings" onClick={leave} className={`gx-sb-i${on === "settings" ? " on" : ""}`}>{GX.gear}<span>Settings</span></Link>
         <button type="button" className="gx-sb-me" data-gx-menu-trigger="" onClick={(e) => onWorkspace(e.currentTarget)} aria-label={`${name}, ${wsLabel}. Switch or manage workspace`}>
           <span className="gx-logo" style={{ marginTop: 0 }}>{initials}</span>
           <span className="two"><b>{name}</b><small>{wsLabel}</small></span>
         </button>
       </aside>
+  );
+  if (docked) return body;
+  return createPortal(
+    <>
+      <div className="gx-sb-dim" onClick={onClose} aria-hidden="true" data-gx-sb-dim="" />
+      {body}
     </>,
     document.body,
   );
@@ -1258,11 +1299,27 @@ export default function AppSidebar({
   const [showBrandKit, setShowBrandKit] = useState(false);
   const [menu, setMenu] = useState<RailMenu>(null);
   const [side, setSide] = useState(false);
+  // R63: on a desktop the sidebar opens beside the page and stays open until it is collapsed
+  const wide = useWide();
+  const [pinned, setPinned] = useState(readPin);
+  const docked = wide && pinned;
+  const pin = (v: boolean) => { setMenu(null); setSide(false); setPinned(v); writePin(v); };
+  const openSide = () => { if (wide) pin(true); else { setMenu(null); setSide(true); } };
   useEffect(() => { setMenu(null); setSide(false); }, [location.pathname]);
   useEffect(() => {
-    const open = () => { setMenu(null); setSide(true); };
+    const open = () => { if (window.matchMedia?.(WIDE).matches) { setMenu(null); setPinned(true); writePin(true); } else { setMenu(null); setSide(true); } };
+    const sync = (e: Event) => setPinned(!!(e as CustomEvent).detail);
+    // Ctrl+\ (⌘+\ on a Mac) opens and collapses the sidebar, anywhere but a text box
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "\\" || !(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      if (!window.matchMedia?.(WIDE).matches) { setSide((x) => !x); return; }
+      setPinned((x) => { writePin(!x); return !x; });
+    };
     window.addEventListener(OPEN_SIDEBAR_EVENT, open);
-    return () => window.removeEventListener(OPEN_SIDEBAR_EVENT, open);
+    window.addEventListener(PIN_EVENT, sync);
+    window.addEventListener("keydown", key);
+    return () => { window.removeEventListener(OPEN_SIDEBAR_EVENT, open); window.removeEventListener(PIN_EVENT, sync); window.removeEventListener("keydown", key); };
   }, []);
 
   // the top bar's workspace name opens the same menu (components/TopNav.tsx)
@@ -1294,17 +1351,25 @@ export default function AppSidebar({
     { key: "data", label: "Data", to: "/data", icon: GX.db },
     { key: "automations", label: "Automate", to: "/automations", icon: GX.bolt },
     { key: "models", label: "Models", to: "/ml-models", icon: GX.ml },
-    { key: "initiatives", label: "Initiatives", to: "/initiatives", icon: GX.target },
   ];
-  // the rail's order (mockup "Studio" rail): New, then Home, Library, Dashboards, Data, Automate, Models, Initiatives
+  // the rail's order (mockup "Studio" rail): New, then Home, Library, Dashboards, Data, Automate, Models
   const railItems = primary.filter((it) => it.key !== "new");
   const initials = ((user?.full_name || user?.email || "G").split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("") || "G").toUpperCase();
 
   return (
     <>
-      <nav className="gx-rail" aria-label="Main" data-gx-rail="" data-sidebar-rail="rail">
-        <button type="button" className="gx-mark" aria-label="Open the sidebar" title="Open the sidebar" aria-expanded={side} data-gx-open-sidebar=""
-          onClick={() => { setMenu(null); setSide((x) => !x); }}><BrandMark size={34} /></button>
+      {docked ? (
+        <SidePanel docked on={on} workspaceId={activeWorkspaceId} items={primary.filter((it) => it.key !== "new")} initials={initials}
+          name={user?.full_name || user?.email || "You"}
+          wsLabel={active ? `${active.is_personal ? "Personal workspace" : active.name}${active.is_personal ? "" : " · Team"}` : "Workspace"}
+          onClose={() => pin(false)}
+          onWorkspace={(el) => { const r = el.getBoundingClientRect(); setMenu({ kind: "ws", x: r.left, y: r.top - 8, sheet: false }); }} />
+      ) : (
+      <nav className="gx-rail" aria-label="Main" data-gx-rail="" data-sidebar-rail="rail"
+        onClick={(e) => { const t = e.target as HTMLElement; if (t === e.currentTarget || t.classList.contains("gx-spacer")) openSide(); }}
+        title="">
+        <button type="button" className="gx-mark" aria-label="Open the sidebar" title="Open the sidebar (Ctrl+\)" aria-expanded={side} data-gx-open-sidebar=""
+          onClick={() => (side ? setSide(false) : openSide())}><BrandMark size={34} /></button>
         <Link to="/chat" className={`gx-new${on === "new" ? " on" : ""}`} aria-current={on === "new" ? "page" : undefined} data-nav="new" title="New">
           {GX.plus}<span className="gx-sr">New</span>
         </Link>
@@ -1313,7 +1378,8 @@ export default function AppSidebar({
             {it.icon}<span className="gx-sr">{it.label}</span>
           </Link>
         ))}
-        <span className="gx-spacer" />
+        <span className="gx-spacer" title="Open the sidebar" />
+        <button type="button" className="gx-ri gx-expand" onClick={openSide} aria-label="Open the sidebar" title="Open the sidebar (Ctrl+\)" data-gx-expand="">{GX.sideOpen}</button>
         {eulivAvailable() && <button type="button" className="gx-ri gx-euliv" onClick={() => openEuliv()} aria-label="Talk to Euliv, the voice assistant" data-nav="euliv" title="Talk to Euliv - or say “Hi Euliv” on Home">{GX.mic}<span className="gx-sr">Euliv</span></button>}
         <button type="button" className={`gx-ri${on === "more" ? " on" : ""}`} data-gx-menu-trigger="" aria-haspopup="menu" aria-expanded={menu?.kind === "more"}
           onClick={(e) => openAt("more", e.currentTarget)} data-nav="more" title="More">{GX.more}<span className="gx-sr">More</span></button>
@@ -1324,16 +1390,17 @@ export default function AppSidebar({
           {initials}
         </button>
       </nav>
+      )}
 
       <nav className="gx-tabs" aria-label="Main" data-gx-tabs="">
         {primary.filter((it) => ["home", "new", "library", "dashboards"].includes(it.key)).map((it) => (
           <Link key={it.key} to={it.to} className={`gx-tab${on === it.key ? " on" : ""}`} aria-current={on === it.key ? "page" : undefined}>{it.icon}{PHONE_LABEL[it.key] || it.label}</Link>
         ))}
-        <button type="button" className={`gx-tab${["more", "data", "automations", "settings", "models", "initiatives"].includes(on) ? " on" : ""}`} data-gx-menu-trigger="" aria-haspopup="menu"
+        <button type="button" className={`gx-tab${["more", "data", "automations", "settings", "models"].includes(on) ? " on" : ""}`} data-gx-menu-trigger="" aria-haspopup="menu"
           aria-expanded={menu?.kind === "more"} onClick={(e) => openAt("more", e.currentTarget)} data-gx-tab-more="">{GX.more}More</button>
       </nav>
 
-      {side && (
+      {side && !docked && (
         <SidePanel on={on} workspaceId={activeWorkspaceId} items={primary.filter((it) => it.key !== "new")} initials={initials}
           name={user?.full_name || user?.email || "You"}
           wsLabel={active ? `${active.is_personal ? "Personal workspace" : active.name}${active.is_personal ? "" : " · Team"}` : "Workspace"}
@@ -1372,12 +1439,9 @@ export default function AppSidebar({
               <div className="sep" />
             </>
           )}
-          <div className="hd">More of Euliv</div>
-          <button type="button" role="menuitem" onClick={() => go("/ml-models")}>{GX.ml}ML Studio</button>
-          <button type="button" role="menuitem" onClick={() => go("/initiatives")}>{GX.target}Initiatives<span className="meta">Pro</span></button>
-          <button type="button" role="menuitem" onClick={() => go("/experiments")}>{GX.flask}Experiments</button>
+          {menu.sheet && <button type="button" role="menuitem" onClick={() => go("/ml-models")}>{GX.ml}Models</button>}
           {isAdmin && <button type="button" role="menuitem" onClick={() => go("/trust")} data-nav="trust">{GX.shield}Trust Center</button>}
-          <div className="sep" />
+          {(isAdmin || menu.sheet) && <div className="sep" />}
           <button type="button" role="menuitem" disabled={!!active?.is_personal} onClick={() => { close(); setShowInviteModal(true); }}
             title={active?.is_personal ? "Switch to a team workspace to invite people" : undefined}>{GX.team}Team and invites</button>
           <button type="button" role="menuitem" data-nav="help" onClick={() => { close(); window.dispatchEvent(new Event("gd360:open-help")); }}>{GX.help}Help and support</button>
