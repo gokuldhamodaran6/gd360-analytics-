@@ -10,8 +10,8 @@ from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, dashboard_comments, admin, conversations, goku,
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
     data_access_rules, ml_models, metric_definitions, transforms, pipelines, projects, apps, automations, ml_studio,
-    spaces, site, admin_v2, admin_ops, admin_biz, admin_quality, autopilot, inapp, guided, initiatives, gtm, gtm_public,
-    ops, trust, domains, notifications, dashboard_ai, assistant, eventos, eventos_public, v2,
+    spaces, site, admin_v2, admin_ops, admin_biz, admin_quality, inapp, guided,
+    ops, trust, domains, notifications, dashboard_ai, assistant, v2,
     flows,
 )
 from .services.scheduler import start_scheduler
@@ -276,21 +276,13 @@ app.include_router(spaces.router)
 # 2026-10-09: the public website (Enterprise demo requests)
 app.include_router(site.router)
 # 2026-10-10: Mission Control (admin portal v2) and the in-app announcements/flags it publishes.
-app.include_router(autopilot.router)  # 2026-10-17 (R53): Initiatives Autopilot
-app.include_router(autopilot.public)
-app.include_router(autopilot.mcp)
+# R63 (2026-10-27): Initiatives - with its Autopilot, Event OS, account-based marketing centre and their public
+# pages - was removed from Euliv. Its routers are no longer mounted and nothing of it runs on the scheduler.
 app.include_router(admin_quality.router)  # 2026-10-17 (R52): Mission Control > Quality
 app.include_router(admin_v2.router)
 app.include_router(admin_ops.router)
 app.include_router(admin_biz.router)
 app.include_router(inapp.router)
-# 2026-10-10: Initiatives + the account-based marketing centre (+ public pages/tracking)
-# 2026-10-13 (round 42): Event OS - before its parent so /initiatives/eventos/* never reads as an initiative id
-app.include_router(eventos.router)
-app.include_router(eventos_public.router)
-app.include_router(initiatives.router)
-app.include_router(gtm.router)
-app.include_router(gtm_public.router)
 # 2026-10-10 (round 19): the Automations home, the Trust Center and company domains.
 app.include_router(ops.router)
 app.include_router(trust.router)
