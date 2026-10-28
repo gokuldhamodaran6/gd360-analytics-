@@ -80,7 +80,8 @@ export function Lead({ text }: { text: string }) {
 
 export function ArtifactCard({ a, onOpen }: { a: Artifact; onOpen?: () => void }) {
   const title = a.name || a.title || "Open";
-  const meta = a.type === "dashboard" ? (a.live ? `Live · ${a.live.label}` : "Dashboard · live on your data")
+  const liveLabel = a.live && typeof a.live === "object" ? (a.live as { label?: string }).label : null;
+  const meta = a.type === "dashboard" ? (liveLabel ? `Live · ${liveLabel}` : a.live ? "Live dashboard · computed in your data" : "Dashboard · live on your data")
     : a.type === "document" ? `Document${a.words ? ` · ${a.words} words` : ""}`
     : a.type === "model" ? `Model${a.score ? ` · ${a.score} on held-out rows` : ""}`
     : a.type === "space" ? `Space${a.rules?.length ? ` · ${a.rules.length} data rule${a.rules.length !== 1 ? "s" : ""}` : ""}`
@@ -479,6 +480,7 @@ function ExplainView({ turn, onMore, busy }: { turn: TurnT; onMore?: () => void;
 
 export function TurnView({
   turn, run, conversationId, onAsk, onOpenArtifact, onOpenMethod, onConfirm, onPickCheck, onRunChanged, onMakeDashboard, busy, onRevise, onCanvas = false, onOpenSteps, onLength, onExplainMore,
+  selectable = false, active = false, onSelect,
 }: {
   turn: TurnT; run?: ProjectRun | null; conversationId: string; onAsk: (q: string) => void;
   onOpenArtifact: (a: Artifact, t: TurnT) => void; onOpenMethod: (t: TurnT) => void; onConfirm: (t: TurnT, approve: boolean) => void;
@@ -490,6 +492,8 @@ export function TurnView({
   onLength?: (t: TurnT, length: ReportLength) => void;
   /** R58: the same card explained at length */
   onExplainMore?: (t: TurnT) => void;
+  /** R63: this turn has work to show on the right; clicking the turn shows it there. `active`: it is shown now */
+  selectable?: boolean; active?: boolean; onSelect?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   // R58: the question card's × closes it (it used to do nothing)
@@ -504,10 +508,24 @@ export function TurnView({
   const line = !working && turn.status === "done" ? workedLine(turn, run) : null;
   const hasSteps = isData && run?.status === "done" && (run.steps || []).length > 0;
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 18 }} data-c2-turn={turn.kind} data-c2-status={turn.status} data-c2-turn-id={turn.id}>
-      {turn.question && <div className="c2-u">{turn.question}</div>}
+    <div className={`c2-turn${selectable ? " sel" : ""}${active ? " on" : ""}`} style={{ display: "flex", flexDirection: "column", gap: 18 }}
+      data-c2-turn={turn.kind} data-c2-status={turn.status} data-c2-turn-id={turn.id} data-c2-active={active ? "" : undefined}
+      onClick={selectable && onSelect ? (e) => {
+        // a click on the turn's own controls does what they say; anywhere else on the turn shows its work on the right
+        const el = e.target as HTMLElement;
+        if (el.closest("button, a, input, textarea, select, label, summary, [role=button], [role=menu], [contenteditable=true], [data-c2-nosel]")) return;
+        if ((window.getSelection()?.toString() || "").trim()) return;
+        onSelect();
+      } : undefined}>
+      {turn.question && (selectable && onSelect
+        ? <button type="button" className="c2-u c2-ubtn" onClick={onSelect} aria-pressed={active} data-c2-pick=""
+            title={active ? "Shown on the right" : "Show this answer on the right"}>{turn.question}</button>
+        : <div className="c2-u">{turn.question}</div>)}
       <div className="c2-a">
-        <div className="c2-who" aria-hidden="true"><BrandMark size={22} radius={6} />Euliv</div>
+        <div className="c2-who" aria-hidden="true"><BrandMark size={22} radius={6} />Euliv
+          {active && <span className="c2-showing" data-c2-showing="">Shown on the right<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg></span>}
+          {selectable && !active && <span className="c2-showhint">Show on the right</span>}
+        </div>
         {(turn.kind !== "chat") && (
           <button type="button" className={`sd-st c2-wst${working ? " work" : ""}${turn.status === "failed" ? " bad" : ""}${open ? " open" : ""}`} onClick={() => setOpen((o) => !o)} data-c2-worked="" aria-expanded={open}>
             {working ? <span className="c2-spin" style={{ width: 13, height: 13 }} />

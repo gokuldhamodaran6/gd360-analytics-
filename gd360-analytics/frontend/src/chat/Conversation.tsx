@@ -170,9 +170,14 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
     }
   }, [turns, runs, conversationId]);
 
+  // R63: when the person picks an earlier turn, the thread stays where they are (no jump to the end)
+  const pickedAt = useRef(0);
   // R50: land on the latest turn - again once the canvas has opened and the column has narrowed
   useEffect(() => {
-    const toEnd = () => { const el = document.scrollingElement || document.documentElement; el.scrollTo({ top: el.scrollHeight }); };
+    const toEnd = () => {
+      if (Date.now() - pickedAt.current < 1500) return;
+      const el = document.scrollingElement || document.documentElement; el.scrollTo({ top: el.scrollHeight });
+    };
     toEnd();
     const id = window.setTimeout(toEnd, 450);
     return () => window.clearTimeout(id);
@@ -292,8 +297,49 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
     return out;
   }, [turns, runs, conv?.dashboards, conversationId]);
   const curKey = canvas ? canvasKey(canvas) : "";
+  // R63: every turn opens its own work on the right - click turn 3 and the right shows turn 3's answer, its dashboard,
+  // its document or its model; an Explain shows the answer it explains. The turn shown on the right is marked.
+  const turnItem = useCallback((t: TurnT): CanvasItem | null => {
+    if (t.kind === "data" && t.run_id) {
+      const r = runs[t.run_id];
+      if (r && (stepsWorthy(r) || (r.steps || []).length > 0 || liveRun(r) || r.status === "failed" || r.status === "stopped")) return { type: "steps", turn: t };
+    }
+    for (const a of t.artifacts || []) { const it = canvasFromArtifact({ ...a, refresh: false } as typeof a, t, conversationId); if (it) return it; }
+    const pl = (t.placements || [])[0];
+    if (pl) return { type: "dashboard", id: pl.dashboard_id, name: pl.dashboard_name, url: `/dashboard-builder/${pl.dashboard_id}`, pageId: pl.page_id };
+    if (t.kind !== "data" && t.run_id) {
+      const owner = turns.find((x) => x.kind === "data" && x.run_id === t.run_id);
+      if (owner) return owner.run_id && runs[owner.run_id] ? { type: "steps", turn: owner } : null;
+    }
+    if (t.status === "done" && (t.trail || []).some((x) => x.sql)) return { type: "method", turn: t };
+    return null;
+  }, [runs, turns, conversationId]);
+  const [picked, setPicked] = useState<string | null>(null);
+  const activeTurnId = useMemo(() => {
+    if (!canvas) return null;
+    const p = picked ? turns.find((t) => t.id === picked) : null;
+    if (p) { const it = turnItem(p); if (it && canvasKey(it) === curKey) return p.id; }
+    for (let i = turns.length - 1; i >= 0; i--) { const it = turnItem(turns[i]); if (it && canvasKey(it) === curKey) return turns[i].id; }
+    return null;
+  }, [canvas, curKey, picked, turns, turnItem]);
+  const selectTurn = useCallback((t: TurnT) => {
+    const it = turnItem(t);
+    if (!it) return;
+    pickedAt.current = Date.now();
+    setPicked(t.id);
+    setCanvas(it);
+  }, [turnItem]);
+  // a tab picked on the right brings its turn into view on the left
+  const lastActive = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeTurnId || activeTurnId === lastActive.current) return;
+    const first = lastActive.current === null;
+    lastActive.current = activeTurnId;
+    if (first || Date.now() - pickedAt.current < 1500) return;
+    document.querySelector(`[data-c2-turn-id="${activeTurnId}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [activeTurnId]);
   const tabs: FrameTab[] = useMemo(() => {
-    const t = items.map((x) => ({ key: canvasKey(x.item), icon: x.icon, label: x.label, badge: x.badge, on: canvasKey(x.item) === curKey, onClick: () => setCanvas(x.item) }));
+    const t = items.map((x) => ({ key: canvasKey(x.item), icon: x.icon, label: x.label, badge: x.badge, on: canvasKey(x.item) === curKey, onClick: () => { setPicked(null); setCanvas(x.item); } }));
     if (canvas && !t.some((x) => x.on)) t.push({ key: curKey, icon: canvas.type === "method" ? "code" : "spark", label: canvas.type === "method" ? "How I worked it out" : "Open", badge: null, on: true, onClick: () => undefined });
     return t;
   }, [items, curKey, canvas]);
@@ -389,6 +435,7 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
                 {!conv && <span className="c2-working"><span className="c2-spin" /> Opening…</span>}
                 {turns.map((t) => (
                   <TurnView key={t.id} turn={t} run={t.run_id ? runs[t.run_id] : null} conversationId={conversationId} busy={busy}
+                    selectable={!!turnItem(t)} active={t.id === activeTurnId} onSelect={() => selectTurn(t)}
                     onCanvas={!!canvas && canvas.type === "steps" && canvas.turn.id === t.id}
                     onAsk={(q) => void send(q)}
                     onOpenArtifact={(a, tt) => { const item = canvasFromArtifact(a, tt, conversationId); if (item) setCanvas(item); }}

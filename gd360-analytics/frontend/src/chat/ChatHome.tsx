@@ -10,7 +10,7 @@
 // were about churn even with a sales table picked). Home is the greeting and the box; the box says which data it
 // asks, and "Deep analysis" became a plain two-way switch - Quick answer or Guided analysis.
 import { useEffect, useRef, useState } from "react";
-import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { ProjectSource } from "../api/projects";
 import { v2Api, type ConversationRow, type Mode } from "../api/v2";
 import TopNav from "../components/TopNav";
@@ -125,7 +125,6 @@ function HomeBody() {
   const sources = (home?.sources || []) as unknown as ProjectSource[];
   const spaces = home?.spaces || [];
   const hasData = sources.length > 0;
-  const showPlan = params.get("plan") === "1";
   useEffect(() => {
     let live = true;
     Promise.all([
@@ -214,7 +213,6 @@ function HomeBody() {
         </div>
         <p className="hm-foot">Euliv can make mistakes. Every number links to the data it came from.</p>
       </div>
-      {showPlan && <Navigate to="/settings/plan" replace />}
     </div>
   );
 }
