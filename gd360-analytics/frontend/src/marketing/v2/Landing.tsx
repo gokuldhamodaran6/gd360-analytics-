@@ -67,7 +67,7 @@ const MORE: [string, string][] = [
 const SOURCES = ["Shopify", "WooCommerce", "Stripe", "Google Ads", "Meta Ads", "Google Analytics 4", "Search Console", "HubSpot", "Klaviyo", "Instagram", "YouTube", "LinkedIn Pages", "WhatsApp Business", "PostgreSQL", "MySQL", "SQL Server", "Supabase", "BigQuery", "Snowflake", "Redshift", "CSV and Excel files"];
 
 export default function Landing() {
-  useMarketingPage("Euliv — ask your data, check every answer");
+  useMarketingPage("Euliv — ask your data, check every answer", { path: "/", noindex: true });
   return (
     <Site data="landing">
       <section className="mk2-wrap mk2-hero">

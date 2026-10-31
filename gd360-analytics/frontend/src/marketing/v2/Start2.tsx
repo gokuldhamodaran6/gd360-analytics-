@@ -39,7 +39,10 @@ const QUESTIONS: Record<string, string[]> = {
 const STEPS: [string, string][] = [["Your account", "Who it is for, and how you sign in"], ["Connect data", "One source or a file to start"], ["First question", "What you want to know first"], ["Your team", "Invite people, or later"]];
 
 export default function Start2() {
-  useMarketingPage("Euliv — get started");
+  useMarketingPage("Get Early Access to Euliv: Connect Your Data in Minutes", {
+    path: "/start",
+    description: "Create your Euliv workspace, connect a warehouse, database or app, and ask your first question in plain English. Every feature is free in early access.",
+  });
   const { user, register, getCaptcha } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
