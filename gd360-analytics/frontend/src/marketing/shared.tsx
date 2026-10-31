@@ -22,17 +22,61 @@ export function A({ href = "#", children, ...rest }: AnchorHTMLAttributes<HTMLAn
   );
 }
 
+/** 2026-10-30 (SEO round): the address search engines should treat as the real one. Set VITE_SITE_URL when the live
+ * domain is ready; prerender.mjs uses the same value for index.html, robots.txt and sitemap.xml. */
+export const SITE_URL = String(import.meta.env.VITE_SITE_URL || "https://gd360-analytics-web.onrender.com").replace(/\/+$/, "");
+
+type PageMeta = { description?: string; path?: string; noindex?: boolean };
+
+/** Sets (and on leaving, restores) one head tag: <meta name|property=...> or <link rel=...>. */
+function setHeadTag(kind: "name" | "property" | "rel", key: string, value: string): () => void {
+  const sel = kind === "rel" ? `link[rel="${key}"]` : `meta[${kind}="${key}"]`;
+  let el = document.head.querySelector(sel) as HTMLMetaElement | HTMLLinkElement | null;
+  const attr = kind === "rel" ? "href" : "content";
+  const created = !el;
+  if (!el) {
+    el = document.createElement(kind === "rel" ? "link" : "meta") as HTMLMetaElement | HTMLLinkElement;
+    el.setAttribute(kind, key);
+    document.head.appendChild(el);
+  }
+  const prev = el.getAttribute(attr);
+  el.setAttribute(attr, value);
+  const node = el;
+  return () => {
+    if (created) node.remove();
+    else if (prev != null) node.setAttribute(attr, prev);
+  };
+}
+
 /** Page title, scroll to the top on arrival, and scroll to "#section" when
- * the address carries one (a link like "/#platform" from another page). */
-export function useMarketingPage(title: string) {
+ * the address carries one (a link like "/#platform" from another page).
+ * 2026-10-30: also the page's description, canonical address, share tags and (for drafts) noindex. */
+export function useMarketingPage(title: string, meta: PageMeta = {}) {
   const { pathname, hash } = useLocation();
+  const { description, path, noindex } = meta;
   useEffect(() => {
     const prev = document.title;
     document.title = title;
+    const undo: Array<() => void> = [
+      setHeadTag("property", "og:title", title),
+      setHeadTag("name", "twitter:title", title),
+    ];
+    if (description) {
+      undo.push(setHeadTag("name", "description", description));
+      undo.push(setHeadTag("property", "og:description", description));
+      undo.push(setHeadTag("name", "twitter:description", description));
+    }
+    if (path) {
+      const url = SITE_URL + path;
+      undo.push(setHeadTag("rel", "canonical", url));
+      undo.push(setHeadTag("property", "og:url", url));
+    }
+    if (noindex) undo.push(setHeadTag("name", "robots", "noindex, follow"));
     return () => {
       document.title = prev;
+      undo.reverse().forEach((f) => f());
     };
-  }, [title]);
+  }, [title, description, path, noindex]);
   useEffect(() => {
     if (!hash) {
       window.scrollTo(0, 0);
