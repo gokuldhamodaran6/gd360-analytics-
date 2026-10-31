@@ -68,7 +68,10 @@ function vals(state: any, setState: (patch: any) => void): any {
 }
 
 export default function MarketingHome() {
-  useMarketingPage("Euliv — Every source. One answer. Proven.");
+  useMarketingPage("Euliv: AI Data Analyst That Proves Every Number", {
+    path: "/",
+    description: "Ask your warehouse, databases and apps in plain English. Euliv answers with charts and shows the query behind every number. Free in early access.",
+  });
   const [state, setS] = useState<any>({ menu: false });
   const setState = (patch: any) => setS((prev: any) => ({ ...prev, ...patch }));
   const V = vals(state, setState);
@@ -242,6 +245,8 @@ export default function MarketingHome() {
               </span>
             </span>
             {" "}
+            {/* 2026-10-30 (SEO): what Euliv is, in words people search for. */}
+            <span className="sr-only">{" Euliv, the AI data analyst for companies without a data team."}</span>
           </h1>
           {" "}
           <p className="mk-w mk-d5" style={{ margin: "0", fontSize: "clamp(17px, 1.8vw, 21px)", lineHeight: "1.6", color: "#A3B0AC", maxWidth: "720px" }}>

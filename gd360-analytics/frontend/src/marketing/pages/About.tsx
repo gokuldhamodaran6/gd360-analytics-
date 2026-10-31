@@ -40,7 +40,10 @@ function vals(state: any, setState: (patch: any) => void): any {
 }
 
 export default function MarketingAbout() {
-  useMarketingPage("Euliv — About us");
+  useMarketingPage("About Euliv: Built So Every Team Can Trust Its Numbers", {
+    path: "/about",
+    description: "Euliv is an AI data analyst for companies without a data team, founded by Gokul Dhamodaran. Our mission, principles and how to reach us.",
+  });
   const [state, setS] = useState<any>({ menu: false });
   const setState = (patch: any) => setS((prev: any) => ({ ...prev, ...patch }));
   const V = vals(state, setState);
@@ -189,6 +192,7 @@ export default function MarketingAbout() {
             </span>
             {" "}
             <h1 className="mk-m-h1" style={{ margin: "0", fontWeight: "900", fontSize: "clamp(46px, 7.4vw, 112px)", lineHeight: "0.93", letterSpacing: "-0.055em", textWrap: "balance" }}>
+              <span className="sr-only">{"About Euliv: "}</span>
               <span className="mk-w mk-d2">
                 {"The analyst every company"}
               </span>

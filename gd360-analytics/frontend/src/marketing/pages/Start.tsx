@@ -90,7 +90,10 @@ function vals(state: any, setState: (patch: any) => void): any {
 }
 
 export default function MarketingStart() {
-  useMarketingPage("Euliv — Get started");
+  useMarketingPage("Get Early Access to Euliv: Connect Your Data in Minutes", {
+    path: "/start",
+    description: "Create your Euliv workspace, connect a warehouse, database or app, and ask your first question in plain English. Every feature is free in early access.",
+  });
   // 2026-10-09: plan, users and billing can arrive from /pricing
   // (?plan=team&users=8&billing=annual); a signed-in visitor starts at step 2.
   const { user, register, getCaptcha } = useAuth();
@@ -288,7 +291,7 @@ export default function MarketingStart() {
                 {" "}
                 <p style={{ margin: "0", color: "#A3B0AC", fontSize: "16.5px", lineHeight: "1.6" }}>
                   {"Every feature during early access. Company-wide roll-out? "}
-                  <A href="/pricing#enterprise">
+                  <A href={SITE.helloEmail ? "mailto:" + SITE.helloEmail : "/about"}>
                     {"Talk to us"}
                   </A>
                   {"."}
@@ -658,10 +661,6 @@ export default function MarketingStart() {
             {"© 2026 Euliv. All rights reserved."}
           </span>
           <span>
-            <A href="/pricing" style={{ color: "#A3B0AC" }}>
-              {"Pricing"}
-            </A>
-            {" · "}
             <A href="/about" style={{ color: "#A3B0AC" }}>
               {"About"}
             </A>
