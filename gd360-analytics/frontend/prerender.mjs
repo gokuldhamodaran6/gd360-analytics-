@@ -49,11 +49,12 @@ for (const [path, page] of Object.entries(PAGES)) {
   let html = template
     .replace(/<title>[^<]*<\/title>/, `<title>${esc(page.title)}</title>`)
     .replace(/(<meta name="description" content=")[^"]*(")/, `$1${esc(page.description)}$2`)
-    .replace(/(<link rel="canonical" href=")[^"]*(")/, `$1${url}$2`)
-    .replace(/(<meta property="og:url" content=")[^"]*(")/, `$1${url}$2`)
     .replace(/(<meta property="og:title" content=")[^"]*(")/, `$1${esc(page.title)}$2`)
     .replace(/(<meta name="twitter:title" content=")[^"]*(")/, `$1${esc(page.title)}$2`);
   if (path !== "/") {
+    // Only this page's own file (served at /about/) gets a fixed canonical; the shared index.html adds it by script.
+    // (placed before the script so it sees this tag and adds no second one)
+    html = html.replace(/(<meta name="viewport"[^>]*>\n)/, `$1    <link rel="canonical" href="${url}" />\n    <meta property="og:url" content="${url}" />\n`);
     html = html
       .replace(/(<meta property="og:description" content=")[^"]*(")/, `$1${esc(page.description)}$2`)
       .replace(/(<meta name="twitter:description" content=")[^"]*(")/, `$1${esc(page.description)}$2`);

@@ -3,18 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- 2026-10-30 (SEO round): the home page's search and share tags. __SITE_URL__ is filled in at build time by
+    <!-- 2026-10-30 (SEO round): the home page's search and share tags. The site address placeholder is filled in at build time by
          prerender.mjs from VITE_SITE_URL (default: the onrender address), so moving to the live domain is one
-         setting. Other public pages set their own title, description and canonical through useMarketingPage. -->
+         setting. Other public pages set their own title, description and canonical through useMarketingPage.
+         The canonical address is added by the small script below, per address: this one file is also what the
+         server sends for every other address (/start, /login, ...), so a fixed tag here would point them all home. -->
     <title>Euliv: AI Data Analyst That Proves Every Number</title>
     <meta name="description" content="Ask your warehouse, databases and apps in plain English. Euliv answers with charts and shows the query behind every number. Free in early access." />
-    <link rel="canonical" href="__SITE_URL__/" />
     <meta name="robots" content="index, follow, max-image-preview:large" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Euliv" />
     <meta property="og:title" content="Euliv: AI Data Analyst That Proves Every Number" />
     <meta property="og:description" content="The AI data analyst for teams without a data team. Ask in plain English; every number shows its work." />
-    <meta property="og:url" content="__SITE_URL__/" />
     <meta property="og:image" content="__SITE_URL__/og-euliv.jpg" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
@@ -23,6 +23,17 @@
     <meta name="twitter:title" content="Euliv: AI Data Analyst That Proves Every Number" />
     <meta name="twitter:description" content="The AI data analyst for teams without a data team. Ask in plain English; every number shows its work." />
     <meta name="twitter:image" content="__SITE_URL__/og-euliv.jpg" />
+    <script>
+      (function () {
+        try {
+          var p = location.pathname.replace(/\/+$/, "") || "/";
+          if (["/", "/about", "/start", "/privacy"].indexOf(p) < 0 || document.querySelector('link[rel="canonical"]')) return;
+          var u = "__SITE_URL__" + (p === "/" ? "/" : p);
+          var l = document.createElement("link"); l.rel = "canonical"; l.href = u; document.head.appendChild(l);
+          var m = document.createElement("meta"); m.setAttribute("property", "og:url"); m.content = u; document.head.appendChild(m);
+        } catch (err) {}
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800;900&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
