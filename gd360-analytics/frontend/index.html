@@ -3,13 +3,64 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Euliv - the AI analyst that shows its work. Ask in plain words across your warehouse, databases and apps, and get answers where every number is proven." />
+    <!-- 2026-10-30 (SEO round): the home page's search and share tags. __SITE_URL__ is filled in at build time by
+         prerender.mjs from VITE_SITE_URL (default: the onrender address), so moving to the live domain is one
+         setting. Other public pages set their own title, description and canonical through useMarketingPage. -->
+    <title>Euliv: AI Data Analyst That Proves Every Number</title>
+    <meta name="description" content="Ask your warehouse, databases and apps in plain English. Euliv answers with charts and shows the query behind every number. Free in early access." />
+    <link rel="canonical" href="__SITE_URL__/" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Euliv" />
+    <meta property="og:title" content="Euliv: AI Data Analyst That Proves Every Number" />
+    <meta property="og:description" content="The AI data analyst for teams without a data team. Ask in plain English; every number shows its work." />
+    <meta property="og:url" content="__SITE_URL__/" />
+    <meta property="og:image" content="__SITE_URL__/og-euliv.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Euliv: Every source. One answer. Proven." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Euliv: AI Data Analyst That Proves Every Number" />
+    <meta name="twitter:description" content="The AI data analyst for teams without a data team. Ask in plain English; every number shows its work." />
+    <meta name="twitter:image" content="__SITE_URL__/og-euliv.jpg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800;900&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="theme-color" content="#07090A" />
-    <title>Euliv Analytics</title>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Organization",
+            "@id": "__SITE_URL__/#organization",
+            "name": "Euliv",
+            "url": "__SITE_URL__/",
+            "logo": "__SITE_URL__/apple-touch-icon.png",
+            "founder": { "@type": "Person", "name": "Gokul Dhamodaran", "sameAs": "https://www.linkedin.com/in/gokuldhamodaran/" }
+          },
+          {
+            "@type": "WebSite",
+            "@id": "__SITE_URL__/#website",
+            "name": "Euliv",
+            "url": "__SITE_URL__/",
+            "publisher": { "@id": "__SITE_URL__/#organization" }
+          },
+          {
+            "@type": "SoftwareApplication",
+            "name": "Euliv Analytics",
+            "url": "__SITE_URL__/",
+            "applicationCategory": "BusinessApplication",
+            "operatingSystem": "Web",
+            "description": "AI data analyst that answers plain-English questions across warehouses, databases and business apps, and shows the query behind every number.",
+            "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD", "description": "Every feature is free during early access" },
+            "publisher": { "@id": "__SITE_URL__/#organization" }
+          }
+        ]
+      }
+    </script>
     <script>
       (function () {
         try {
