@@ -86,4 +86,8 @@ apscheduler==3.10.4
 # separate model registry/blob store).
 scikit-learn==1.5.2
 joblib==1.4.2
+# 2026-11-06 (R64, deep analysis): statistical models the Analyst's Python may import - OLS/logistic regression
+# with p-values, ARIMA/exponential smoothing, seasonal decomposition. 0.14.4 supports the pinned numpy 1.26.4,
+# scipy 1.13.1 and pandas 2.2.3 (verified in a clean Python 3.11 install); prebuilt wheels, no system packages.
+statsmodels==0.14.4
 segno==1.6.1
