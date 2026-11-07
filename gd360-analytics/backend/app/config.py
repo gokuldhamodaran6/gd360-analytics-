@@ -213,6 +213,9 @@ class Settings(BaseSettings):
     # charted 731 days); medium keeps most of the speed and plans like before
     GEMINI_REASONING_EFFORT: str = "medium"
     GEMINI_ANALYST_REASONING_EFFORT: str = "high"
+    # 2026-11-06 (R64): the Analyst's FIRST attempt runs at this effort so an answer comes back fast; only a retry
+    # (a failed query, run or check) uses GEMINI_ANALYST_REASONING_EFFORT above. Empty = use that one every time.
+    ANALYST_FIRST_EFFORT: str = "low"
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "openai/gpt-oss-20b"
     # Goku talks to this model instead of GROQ_MODEL above, when
