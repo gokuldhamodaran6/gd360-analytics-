@@ -510,6 +510,18 @@ def _run_duckdb(sql: str, frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
         con.close()
 
 
+def _run_duckdb_capped(sql: str, frames: dict[str, pd.DataFrame], cap: int) -> pd.DataFrame:
+    if cap == ROW_CAP:
+        return _run_duckdb(sql, frames)
+    con = _duckdb()
+    try:
+        for name, df in frames.items():
+            con.register(name, df)
+        return con.execute(ensure_row_cap(sql, "duckdb", cap)).df()
+    finally:
+        con.close()
+
+
 # ---- running a step ----------------------------------------------------------
 
 def _detached(ds: models.DataSource) -> SimpleNamespace:
@@ -530,15 +542,18 @@ def _run_one(step: dict, ds: models.DataSource, src: CatalogSource, frames: dict
     sql = step["sql"]
     repaired = False
     last_error = None
+    # 2026-11-06 (R64): the Analyst's SQL steps feed Python (a model needs the rows, not a 5,000-row preview), so a
+    # step may carry its own, larger row cap; every planned step keeps ROW_CAP
+    cap = int(step.get("row_cap") or ROW_CAP)
     for attempt in range(2):
         try:
             if src.mode == "live":
-                df, scanned = warehouse_exec.run_sql(ds, ensure_row_cap(sql, src.dialect))
+                df, scanned = warehouse_exec.run_sql(ds, ensure_row_cap(sql, src.dialect, cap))
             else:
-                df, scanned = _run_duckdb(sql, frames or {}), None
-            truncated = len(df) > ROW_CAP
+                df, scanned = _run_duckdb_capped(sql, frames or {}, cap), None
+            truncated = len(df) > cap
             if truncated:
-                df = df.head(ROW_CAP)
+                df = df.head(cap)
             return {"ok": True, "df": df, "sql": sql, "bytes_scanned": scanned, "repaired": repaired,
                     "truncated": truncated, "duration_ms": int((time.perf_counter() - started) * 1000),
                     "raw_error": None}

@@ -23,6 +23,13 @@ analyst does:
 
 Progress is written to run.plan["progress"] as it goes, so the page shows
 the work live, the way a person watches an analyst think.
+
+R64 (2026-11-06, deep analysis): a live warehouse or database is no longer
+copied into Python (the first 50,000 rows). The model writes named SQL steps
+first, Euliv runs them in the database, and the Python step receives every
+result as a DataFrame (deep_steps.py). Python may import scikit-learn and
+statsmodels. The first attempt is fast (low reasoning effort); only a retry
+thinks harder.
 """
 from __future__ import annotations
 
@@ -47,6 +54,7 @@ from ...config import get_settings
 from .. import ai_engine, data_access_rules, data_loader, synced_sources
 from .analyst_lib import HELPER_DOC, HELPERS
 from .analysis import table_payload
+from . import deep_steps
 from .catalog import Catalog
 from .numbers import allowed_values, extract_numbers, unsupported_numbers
 
@@ -96,6 +104,14 @@ _ROUTE = re.compile(
     r"\bexpected value of\b|\bhypothesis\b|\bstatistically\s+significant|\bsignificance\b|\bp[\s-]?value\b|"
     r"\bconfidence interval\b|\bregression\b|\bcorrelat(?:ion|ed|e)\b|\belasticity\b|\bt[\s-]?test\b|\bchi[\s-]?square|\banova\b|"
     r"\ba/?b test\b|\bsample size\b|"
+    # 2026-11-06 (R64): machine learning, text analytics and statistical models - Python, not one SQL query
+    r"\bmachine[\s-]*learning\b|\bml model\b|\btrain (?:a |an )?(?:model|classifier)\b|\bclassif(?:y|ier)\b|\bclassification model\b|"
+    r"\bclustering\b|\bcluster (?:my|our|the|these|customers|users|products|stores|accounts|clients)\b|\bk[\s-]?means\b|\brandom forest\b|\bdecision tree\b|\bgradient boost|\bxgboost\b|"
+    r"\blogistic\b|\bneural net|\bfeature importance\b|\bpca\b|\bprincipal component|\bdimensionality\b|"
+    r"\bsentiment analysis\b|\banaly[sz]e (?:the )?sentiment\b|\bsentiment of\b|\btopic model|\btf[\s-]?idf\b|\bnlp\b|\btext (?:analysis|mining|classification)\b|"
+    r"\boutliers?\b|\banomal(?:y|ies|ous)\b|\barima\b|\bseasonal decomposition\b|\bsurvival (?:analysis|curve)\b|"
+    r"\bkaplan[\s-]*meier\b|\bmonte\s*carlo\b|\bbootstrap(?:ped|ping)?\b|\bmann[\s-]*whitney\b|\bkruskal\b|"
+    r"\bpredict(?:ion|ions|ive)?\b[^.?!]{0,40}\b(?:model|from|using|based on|for each|per)\b|"
     # queues and staffing
     r"\bhow many (?:staff|people|servers|agents|cashiers|baristas|tellers|nurses|doctors|drivers|machines|trucks|employees|workers|counters|lanes|tills)\s+(?:do|should|would|will|are|is)\s+(?:we|i|you|needed|required)\b|"
     r"\b(?:staffing|headcount)\s+(?:plan|level|model|needed|required)\b|\bqueue(?:ing)?\s+(?:model|simulation|theory)\b|"
@@ -136,6 +152,7 @@ def wants_analyst(question: str, catalog: Catalog, kind: str = "project") -> boo
 STAGES = [
     ("read", "Reading the data"),
     ("plan", "Working out the method"),
+    ("query", "Querying the database"),
     ("run", "Running the analysis"),
     ("check", "Checking the numbers"),
     ("write", "Writing the answer"),
@@ -167,6 +184,14 @@ class _Progress:
                 if status in ("done", "failed"):
                     p["at_s"] = round(time.perf_counter() - self.t0, 1)
         plan["progress"] = prog
+        self.run.plan = plan
+        flag_modified(self.run, "plan")
+        self._save()
+
+    def drop(self, stage: str) -> None:
+        """A stage this run never has (R64: "Querying the database" when no live source is in scope)."""
+        plan = dict(self.run.plan or {})
+        plan["progress"] = [p for p in plan.get("progress") or [] if p.get("id") != stage]
         self.run.plan = plan
         flag_modified(self.run, "plan")
         self._save()
@@ -251,13 +276,19 @@ def relevant_sources(catalog: Catalog, question: str, limit: int = 3) -> list:
     return strong or [scored[0][2]]
 
 
-def load_frames(db: Session, user: models.User, catalog: Catalog, question: str = "") -> tuple[dict, list[dict]]:
+def load_frames(db: Session, user: models.User, catalog: Catalog, question: str = "",
+                deferred: list | None = None, taken: set[str] | None = None) -> tuple[dict, list[dict]]:
     """{python name: DataFrame} for the tables in scope, plus a descriptor
-    per table (source, rows, the file's own checks and tidy notes)."""
+    per table (source, rows, the file's own checks and tidy notes).
+    R64: with `deferred` given, a live source (no access rules) is not loaded - it is appended there and the
+    model queries it with SQL steps instead."""
     frames: dict[str, pd.DataFrame] = {}
     info: list[dict] = []
-    taken: set[str] = set()
+    taken = taken if taken is not None else set()
     for src in relevant_sources(catalog, question):
+        if deferred is not None and deep_steps.deferred_ok(src):
+            deferred.append(src)
+            continue
         ds = db.get(models.DataSource, src.id)
         if ds is None:
             continue
@@ -425,8 +456,18 @@ How to think, like the best analyst in the room:
 - Prefer exact methods; when you simulate, use a fixed seed and enough runs (1,000+) and report the spread.
 - Be exact. Vectorize; the code must finish in under 20 seconds. Never print; build `result`.
 
+Machine learning, text and statistics (R64): you may import from sklearn (scikit-learn) and statsmodels, e.g.
+`from sklearn.ensemble import RandomForestRegressor`, `from sklearn.feature_extraction.text import TfidfVectorizer`,
+`import statsmodels.api as sm`. For any model: split rows into train and test (random_state=42; by time for a
+forecast), report the test score next to a simple baseline (the mean, the majority class, last period) in
+key_numbers, and show what drives it (feature importance or coefficients) in a
+table. Keep fits light so they finish in time (n_estimators <= 200, n_jobs=1). Never claim more than the test score
+supports.
+
 Code rules: the tables are already loaded as pandas DataFrames, each as a variable named as shown and also
-in the dict `tables`. NO import statements, no files, no network, no plotting, no classes. {HELPER_DOC}
+in the dict `tables` (results of your SQL steps arrive the same way, under their names). The only imports allowed
+are from sklearn, statsmodels, scipy, math, statistics, itertools, collections, datetime and re; no files, no
+network, no plotting, no classes. {HELPER_DOC}
 
 Only when the question asks for FACTS about the person's business that the attached data does not contain and
 that no reasonable assumption could stand in for (e.g. "sales by store location" when no column holds a location),
@@ -454,7 +495,8 @@ result = {{
 Model "expr" may use + - * / ** ( ), min(), max(), abs(), round(), numbers, row value names, input keys and
 earlier output keys. formats: money | number | integer | percent | minutes | hours.
 
-Reply in exactly this form - a JSON block, then one Python block:
+Reply in exactly this form - a JSON block, then (only when live sources are listed) your ```sql steps, then one
+Python block:
 ```json
 {{"title": "short title (max 60 chars)", "understanding": "one sentence: what the data is and what is asked",
   "reading": "how you read the question", "other_readings": ["full alternative question", ...],
@@ -508,7 +550,7 @@ def parse_reply(text: str) -> tuple[dict, str]:
         except ValueError:
             meta = {}
     code = ""
-    rest = _JSON_BLOCK.sub("", text or "")
+    rest = deep_steps.strip_sql_blocks(_JSON_BLOCK.sub("", text or ""))
     for block in _PY_BLOCK.findall(rest):
         if "result" in block and not block.strip().startswith("{"):
             code = block
@@ -518,13 +560,19 @@ def parse_reply(text: str) -> tuple[dict, str]:
     return (meta if isinstance(meta, dict) else {}), clean_code(code)
 
 
+_KEEP_IMPORT = re.compile(r"^(?:import|from)\s+(?:sklearn|statsmodels|scipy|patsy)\b")
+
+
 def clean_code(code: str) -> str:
     """Drops import lines (every allowed module is already in scope) and
-    plotting calls, which have nothing to draw on."""
+    plotting calls, which have nothing to draw on. R64: imports from scikit-learn,
+    statsmodels and scipy stay - those load on demand, inside the sandbox only."""
     out = []
     for line in (code or "").splitlines():
         s = line.strip()
         if re.match(r"^(import\s+\w|from\s+[\w.]+\s+import\s)", s):
+            if _KEEP_IMPORT.match(s):
+                out.append(line)
             continue
         if re.match(r"^(plt|sns|fig|ax)\b", s) or s.startswith("print("):
             indent = line[: len(line) - len(line.lstrip())]
@@ -534,10 +582,12 @@ def clean_code(code: str) -> str:
     return "\n".join(out).strip()
 
 
-def _call(messages: list[dict], max_tokens: int = 9000) -> str:
+def _call(messages: list[dict], max_tokens: int = 9000, first: bool = False) -> str:
     model = (getattr(settings, "ANALYST_MODEL", "") or "").strip() or None
     # R59: the rest of the app thinks "low" (fast); the Analyst writes and checks Python, so it may think longer
-    with ai_engine.reasoning_effort((getattr(settings, "GEMINI_ANALYST_REASONING_EFFORT", "") or "").strip().lower() or None):
+    # R64: ... but only on a retry. The first attempt answers fast; a failed run or check thinks harder.
+    effort = (getattr(settings, "ANALYST_FIRST_EFFORT", "") or "").strip().lower() if first else ""
+    with ai_engine.reasoning_effort(effort or (getattr(settings, "GEMINI_ANALYST_REASONING_EFFORT", "") or "").strip().lower() or None):
         return ai_engine._call_llm_resilient(messages, max_tokens=max_tokens, model_override=model)
 
 
@@ -756,7 +806,7 @@ def write_answer(question: str, meta: dict, res: dict) -> dict:
                                         + _results_text(res) + _best_text(res)}]
     for attempt in range(2):
         try:
-            raw = ai_engine._extract_json(_call(msgs, max_tokens=3000))
+            raw = ai_engine._extract_json(_call(msgs, max_tokens=3000, first=True))  # R64: prose from computed numbers - fast
         except Exception as e:  # noqa: BLE001
             print(f"[analyst] writer failed: {e}")
             break
@@ -912,6 +962,33 @@ def _visual(res: dict) -> list[dict]:
 
 # ---- the run ----------------------------------------------------------------
 
+def _lazy_live(db: Session, live: list, code: str, frames: dict, info: list, taken: set[str]) -> list[str]:
+    """R64 fallback: the code reads a live table by name but wrote no SQL step - load the first LIVE_ROWS rows of
+    that table, as before R64, and say so. Returns the tables loaded."""
+    loaded = []
+    for src in live:
+        ds = db.get(models.DataSource, src.id)
+        if ds is None:
+            continue
+        for t in src.tables:
+            name = re.sub(r"[^0-9a-zA-Z_]+", "_", t.name).strip("_").lower()
+            if not name or name in frames or not re.search(rf"\b{re.escape(name)}\b", code or ""):
+                continue
+            try:
+                df = data_loader.load_dataframe(ds, table=t.source_key or t.name, row_limit=LIVE_ROWS, db=db)
+            except Exception as e:  # noqa: BLE001
+                print(f"[analyst] lazy load of {src.name}/{t.name} failed: {e}")
+                continue
+            frames[name] = df
+            taken.add(name)
+            note = _sample_note(len(df), t.rows if t.rows and t.rows > len(df) else None, "live table") if len(df) >= LIVE_ROWS else None
+            info.append({"name": name, "label": f"{src.name} / {t.name}", "source": src.name, "source_id": src.id, "kind": src.label,
+                         "rows": int(len(df)), "columns": int(df.shape[1]), "checks": [], "notes": [], "note": note,
+                         "rows_total": None, "sampled": bool(note), "currency": None, "formulas": []})
+            loaded.append(t.name)
+    return loaded
+
+
 def _prev_code(db: Session, run: models.ProjectRun) -> str | None:
     prev = (db.query(models.ProjectRun)
             .filter(models.ProjectRun.conversation_id == run.conversation_id, models.ProjectRun.id != run.id,
@@ -928,18 +1005,27 @@ def run(db: Session, run_row: models.ProjectRun, catalog: Catalog, user: models.
     t0 = time.perf_counter()
     prog = _Progress(db, run_row)
     prog.set("read", "running")
-    frames, info = load_frames(db, user, catalog, run_row.question)
-    if frames:
-        detail = "; ".join(f"{m['label']}: {m['rows']:,} rows" for m in info[:3])
+    deferred: list = []
+    taken: set[str] = set()
+    frames, info = load_frames(db, user, catalog, run_row.question, deferred=deferred, taken=taken)
+    live = [src for src in deferred]
+    if frames or live:
+        parts = [f"{m['label']}: {m['rows']:,} rows" for m in info[:3]]
+        parts += [f"{src.name}: {len(src.tables)} table{'s' if len(src.tables) != 1 else ''}, queried in the database" for src in live[:2]]
+        detail = "; ".join(parts)
         tidy = [n for m in info for n in m.get("notes") or []]
         if tidy:
             detail += " · " + tidy[0]
     else:
         detail = "No data attached - the analysis builds its own numbers"
     prog.set("read", "done", detail)
+    if not live:
+        prog.drop("query")
 
     question = run_row.question
-    data_text = "\n\n".join(_describe(m["name"], frames[m["name"]], m) for m in info) or \
+    data_text = "\n\n".join([_describe(m["name"], frames[m["name"]], m) for m in info]
+                             + [deep_steps.describe_live(src, {}) for src in live]
+                             + ([deep_steps.LIVE_RULES] if live else [])) or \
         "NO DATA IS ATTACHED. Answer from the question alone: generate data with rng where needed."
     user_msg = "\n\n".join(x for x in [
         f"TODAY: {datetime.utcnow().date().isoformat()}",
@@ -954,9 +1040,12 @@ def run(db: Session, run_row: models.ProjectRun, catalog: Catalog, user: models.
     prog.set("plan", "running")
     meta, code, res, last_err = {}, "", None, None
     attempts: list[dict] = []
+    queries: list[dict] = []
+    sql_cache: dict = {}
+    sql_frames: dict[str, pd.DataFrame] = {}
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            reply = _call(messages)
+            reply = _call(messages, first=attempt == 1)
         except Exception as e:  # noqa: BLE001
             print(f"[analyst] model call failed: {e}")
             last_err = ai_engine.friendly_ai_error(e)
@@ -967,21 +1056,54 @@ def run(db: Session, run_row: models.ProjectRun, catalog: Catalog, user: models.
         if not code2:
             last_err = "The model did not return code."
             messages += [{"role": "assistant", "content": reply[:6000]},
-                         {"role": "user", "content": "Return the ```json block and ONE ```python block that sets `result`."}]
+                         {"role": "user", "content": "Return the ```json block" + (", your ```sql steps" if live else "")
+                          + " and ONE ```python block that sets `result`."}]
             continue
         code = code2
         if attempt == 1:
             prog.set("plan", "done", meta.get("method") or "Method chosen")
             prog.meta(title=(meta.get("title") or question)[:80], analyst_steps=[str(s)[:140] for s in (meta.get("steps") or [])][:6])
+        # R64 step 1: the SQL steps run in the database first
+        sql_steps = deep_steps.parse_sql_steps(reply) if live else []
+        if live:
+            if sql_steps:
+                prog.set("query", "running", f"{len(sql_steps)} quer{'ies' if len(sql_steps) != 1 else 'y'}"
+                         + (f" · attempt {attempt}" if attempt > 1 else ""))
+                started = time.perf_counter()
+                got, recs, sql_errors = deep_steps.run_sql_steps(db, user, catalog, sql_steps, live, taken, sql_cache)
+                ms = int((time.perf_counter() - started) * 1000)
+                queries = recs
+                sql_frames = got
+                if sql_errors:
+                    last_err = "; ".join(sql_errors)[:600]
+                    attempts.append({"attempt": attempt, "ok": False, "error": last_err, "ms": ms, "stage": "sql"})
+                    prog.set("query", "failed" if attempt == MAX_ATTEMPTS else "running", sql_errors[0][:200])
+                    ok_text = deep_steps.results_text(got, recs)
+                    messages += [{"role": "assistant", "content": reply[:12000]},
+                                 {"role": "user", "content": "These SQL steps failed:\n- " + "\n- ".join(sql_errors[:6])
+                                  + (f"\n\nThe ones that ran returned:\n{ok_text}" if ok_text else "")
+                                  + "\nFix them and reply in the same form (json block + sql blocks + python block)."}]
+                    res = None
+                    continue
+                rows = sum(r.get("rows") or 0 for r in recs)
+                prog.set("query", "done", f"{len(recs)} quer{'ies' if len(recs) != 1 else 'y'} · {rows:,} rows back")
+            elif not sql_frames:
+                prog.set("query", "done", "No query needed")
+        run_frames = {**frames, **sql_frames}
+        missing = _lazy_live(db, live, code, run_frames, info, taken) if live and not sql_steps else []
+        if missing:
+            print(f"[analyst] code read live tables without SQL; loaded a sample of {', '.join(missing)}")
         prog.set("run", "running", f"Attempt {attempt}" if attempt > 1 else None)
         started = time.perf_counter()
-        res, err, problems = _run_code(code, frames)
+        res, err, problems = _run_code(code, run_frames)
         attempts.append({"attempt": attempt, "ok": not err and not problems, "error": (err or "; ".join(problems))[:600] if (err or problems) else None,
                          "ms": int((time.perf_counter() - started) * 1000)})
         if err:
             last_err = err
+            extra = ("\nYour SQL steps returned:\n" + deep_steps.results_text(sql_frames, queries)) if sql_frames else ""
             messages += [{"role": "assistant", "content": reply[:12000]},
-                         {"role": "user", "content": f"Running your code failed:\n{err[-2500:]}\nFix it and reply in the same form (json block + python block)."}]
+                         {"role": "user", "content": f"Running your code failed:\n{err[-2500:]}{extra}\nFix it and reply in the same form "
+                          + ("(json block + sql blocks + python block)." if live else "(json block + python block).")}]
             continue
         prog.set("run", "done", f"Ran in {attempts[-1]['ms'] / 1000:.1f} s")
         prog.set("check", "running")
@@ -989,7 +1111,7 @@ def run(db: Session, run_row: models.ProjectRun, catalog: Catalog, user: models.
             last_err = "; ".join(problems)
             messages += [{"role": "assistant", "content": reply[:12000]},
                          {"role": "user", "content": "The result has problems:\n- " + "\n- ".join(problems[:6])
-                          + "\nFix them and reply in the same form (json block + python block)."}]
+                          + "\nFix them and reply in the same form " + ("(json block + sql blocks + python block)." if live else "(json block + python block).")}]
             if attempt < MAX_ATTEMPTS:
                 prog.set("check", "failed", problems[0][:200])
                 continue
@@ -1017,6 +1139,9 @@ def run(db: Session, run_row: models.ProjectRun, catalog: Catalog, user: models.
 
     data_used = [{"name": m["label"], "rows": m["rows"], "source_id": m["source_id"], "notes": m.get("notes") or [],
                   "checks": m.get("checks") or []} for m in info]
+    data_used += [{"name": f"{q['source']} · {q['name']}", "rows": int(q.get("rows") or 0), "source_id": None,
+                   "notes": [q["note"]] if q.get("note") else ["Queried in the database"], "checks": []}
+                  for q in queries if q.get("status") == "done"]
     run_row.result = {
         "answer": {"headline": answer["headline"], "answer": answer["answer"], "bullets": answer.get("bullets") or [],
                    "causes": [], "ruled_out": [], "next_questions": answer.get("next_questions") or [],
@@ -1029,15 +1154,17 @@ def run(db: Session, run_row: models.ProjectRun, catalog: Catalog, user: models.
             "steps": [str(s)[:160] for s in (meta.get("steps") or [])][:6],
             "code": code, "attempts": attempts, "checks": checks, "key_numbers": res.get("key_numbers") or {},
             "tables": res.get("tables") or [], "model": res.get("model"), "data_used": data_used,
-            "no_data": not frames, "fallback_note": fallback_note,
+            "no_data": not frames and not live, "fallback_note": fallback_note,
+            "queries": [{k: q.get(k) for k in ("name", "source", "sql", "status", "rows", "truncated", "ms", "repaired",
+                                               "columns", "preview", "error", "note", "cached")} for q in queries],
             "elapsed_s": round(time.perf_counter() - t0, 1),
         },
         "facts": [], "summary": {}, "kpis": [], "visuals": _visual(res),
         "warnings": [],
         "evidence": [{"id": f"a{i + 1}", "title": t["title"], "source": "Analysis", **{k: t[k] for k in ("columns", "rows", "truncated")}}
                      for i, t in enumerate(res.get("tables") or [])],
-        "sources_used": sorted({m["source"] for m in info}),
-        "queries": 0,
+        "sources_used": sorted({m["source"] for m in info} | {q["source"] for q in queries if q.get("status") == "done"}),
+        "queries": len([q for q in queries if q.get("status") == "done"]),
     }
     plan = dict(run_row.plan or {})
     plan["title"] = run_row.result["analyst"]["title"]
@@ -1057,7 +1184,7 @@ def run(db: Session, run_row: models.ProjectRun, catalog: Catalog, user: models.
 
 def _fail(db: Session, run_row: models.ProjectRun, prog: _Progress, reason: str, meta: dict, code: str,
           attempts: list, t0: float) -> None:
-    for st in ("plan", "run", "check", "write"):
+    for st in ("plan", "query", "run", "check", "write"):
         p = next((x for x in (run_row.plan or {}).get("progress") or [] if x["id"] == st), None)
         if p and p["status"] in ("pending", "running"):
             prog.set(st, "failed" if p["status"] == "running" else "pending")
