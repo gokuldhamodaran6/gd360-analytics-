@@ -22,6 +22,7 @@ README "Security roadmap".
 from __future__ import annotations
 
 import multiprocessing as mp
+import re
 import time
 import traceback
 from typing import Any
@@ -78,6 +79,10 @@ _IMPORT_ROOTS = {
     "numpy", "pandas", "scipy", "math", "cmath", "statistics", "itertools", "collections", "functools", "operator",
     "datetime", "decimal", "fractions", "random", "re", "json", "heapq", "bisect", "copy", "string", "numbers",
     "warnings", "typing", "enum", "dataclasses", "textwrap", "calendar", "dateutil", "pytz", "zoneinfo",
+    # 2026-11-06 (R64, deep analysis): machine learning and statistical models - pure computation, no file, network
+    # or process access of their own reachable from the generated code (their internal imports use the real
+    # builtins, not this guarded one).
+    "sklearn", "statsmodels", "patsy",
 }
 
 
@@ -119,8 +124,29 @@ def _read_container_memory_limit_bytes() -> int:
     return _FALLBACK_BYTES
 
 
+_HEAVY_IMPORT = re.compile(r"^\s*(?:import|from)\s+(?:sklearn|statsmodels)\b", re.M)
+
+
+def _current_vmsize_bytes() -> int:
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmSize:"):
+                    return int(line.split()[1]) * 1024
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
+
+
 def _child_worker(code: str, tables: dict[str, pd.DataFrame], conn, timeout: int, extra: dict | None = None) -> None:
     try:
+        # 2026-11-06 (R64): analysis code runs at a lower CPU priority than the web process, so a long model fit
+        # never slows the chat, the API or a quick SQL answer for anyone else on this small shared box.
+        try:
+            import os
+            os.nice(10)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             import resource
             # 2026-09-28: investigated whether a flat 1GB figure was
@@ -204,6 +230,15 @@ def _child_worker(code: str, tables: dict[str, pd.DataFrame], conn, timeout: int
             _MAX_CHILD_BYTES = 1024 * 1024 * 1024  # the 2026-09-28 safe ceiling, never exceeded
             real_headroom_bytes = max(0, container_limit - parent_rss_bytes - _PARENT_CONCURRENCY_RESERVE_BYTES)
             mem_bytes = min(_MAX_CHILD_BYTES, _LIBRARY_VIRTUAL_OVERHEAD_BYTES + real_headroom_bytes)
+            # 2026-11-06 (R64, deep analysis): code that imports scikit-learn or statsmodels maps ~90 MB more address
+            # space (measured: VmSize 392 -> 478 MB, RSS 80 -> 162 MB) on top of what fork() already inherited, so the
+            # flat 450 MB allowance above left such code almost no room. For that code only, the cap is what this
+            # child already maps plus the REAL headroom left in the container - new allocations are still bounded by
+            # the same real headroom, and the 1 GB ceiling still holds.
+            if _HEAVY_IMPORT.search(code or ""):
+                current_vm = _current_vmsize_bytes()
+                if current_vm:
+                    mem_bytes = min(_MAX_CHILD_BYTES, max(mem_bytes, current_vm + real_headroom_bytes))
             resource.setrlimit(resource.RLIMIT_CPU, (timeout + 2, timeout + 5))
             resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
         except Exception:
