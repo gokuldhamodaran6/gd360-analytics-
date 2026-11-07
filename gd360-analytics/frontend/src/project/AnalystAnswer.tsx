@@ -30,6 +30,13 @@ export type Analyst = {
   steps?: string[]; code?: string; attempts?: { attempt: number; ok: boolean; error?: string | null; ms: number }[]; checks?: Check[];
   key_numbers?: Record<string, number>; tables?: Table[]; model?: Model | null; no_data?: boolean; elapsed_s?: number;
   data_used?: { name: string; rows: number; notes?: string[]; checks?: any[] }[]; fallback_note?: string | null;
+  // R64 (deep analysis): the SQL steps that ran in the database before the Python step
+  queries?: Query[];
+};
+type Query = {
+  name: string; source: string; sql: string; status: string; rows?: number | null; truncated?: boolean; ms?: number | null;
+  repaired?: boolean; columns?: { name: string; dtype?: string }[]; preview?: Record<string, any>[]; error?: string | null;
+  note?: string | null; cached?: boolean;
 };
 
 export const analystOf = (run: ProjectRun | null | undefined): Analyst | null => ((run?.result as any)?.analyst as Analyst) || null;
@@ -300,6 +307,56 @@ function WorkedOut({ a }: { a: Analyst }) {
   );
 }
 
+// ---- R64: step 1, the SQL that ran in the database ---------------------------------------------------------
+function QueryStep({ q, i }: { q: Query; i: number }) {
+  const [open, setOpen] = useState(i === 0);
+  const cols = (q.columns || []).map((c) => c.name).slice(0, 8);
+  return (
+    <div className="border-t border-border first-of-type:border-t-0" data-analyst-query={q.name}>
+      <button type="button" onClick={() => setOpen((v) => !v)} className="w-full flex items-center gap-3 py-3 text-left">
+        <span className="font-mono text-[11px] text-kind-answer w-5 shrink-0">{String(i + 1).padStart(2, "0")}</span>
+        <span className="font-mono text-ui text-text truncate">{q.name}</span>
+        <span className="text-caption text-muted truncate">{q.source}</span>
+        <span className={`ml-auto shrink-0 text-caption font-mono ${q.status === "done" ? "text-muted" : "text-warning"}`}>
+          {q.status === "done" ? `${num(q.rows || 0)} ${plural(q.rows || 0, "row")}${q.ms ? ` · ${(q.ms / 1000).toFixed(1)} s` : q.cached ? " · reused" : ""}` : "failed"}
+        </span>
+      </button>
+      {open && (
+        <div className="pb-3 flex flex-col gap-2">
+          <pre className="m-0 p-3 rounded-lg overflow-x-auto text-[12px] leading-[1.6] font-mono text-secondary bg-base/50 border border-border">{q.sql}</pre>
+          {q.error && <span className="text-caption text-warning">{q.error}</span>}
+          {(q.note || q.repaired) && <span className="text-caption text-muted">{q.note || "Euliv fixed this query once after the database rejected it."}</span>}
+          {cols.length > 0 && (q.preview || []).length > 0 && (
+            <div className="overflow-x-auto rounded-lg border border-border">
+              <table className="w-full text-caption font-mono">
+                <thead><tr>{cols.map((c) => <th key={c} className="text-left font-medium text-muted px-2.5 py-1.5 border-b border-border whitespace-nowrap">{c}</th>)}</tr></thead>
+                <tbody>{(q.preview || []).slice(0, 5).map((r, k) => (
+                  <tr key={k}>{cols.map((c) => <td key={c} className="px-2.5 py-1 text-secondary whitespace-nowrap">{cell(r[c])}</td>)}</tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function QuerySteps({ a }: { a: Analyst }) {
+  const qs = a.queries || [];
+  if (!qs.length) return null;
+  const rows = qs.reduce((n, q) => n + (q.status === "done" ? q.rows || 0 : 0), 0);
+  return (
+    <section className="rounded-card border border-border bg-surface p-5 flex flex-col gap-1" data-analyst-queries="">
+      <div className="flex items-baseline justify-between gap-3 flex-wrap pb-1">
+        <h3 className="m-0 text-section font-semibold text-text">Step 1 · Queried the database</h3>
+        <span className="text-caption text-muted">{qs.length} {qs.length === 1 ? "query" : "queries"} · {num(rows)} {plural(rows, "row")} back · then Python on the results</span>
+      </div>
+      {qs.map((q, i) => <QueryStep key={q.name + i} q={q} i={i} />)}
+    </section>
+  );
+}
+
 // ---- while it works ---------------------------------------------------------------------------------------
 export function AnalystProgress({ run, compact = false }: { run: ProjectRun; compact?: boolean }) {
   const prog = progressOf(run);
@@ -346,6 +403,7 @@ export function AnalystMethod({ run }: { run: ProjectRun }) {
         {a.fallback_note && <p className="m-0 text-caption text-muted">A single database query couldn't answer this ({a.fallback_note.slice(0, 160)}), so Euliv worked it out with code.</p>}
       </section>
       <WorkedOut a={a} />
+      <QuerySteps a={a} />
       {(a.data_used || []).length > 0 && (
         <section className="rounded-card border border-border bg-surface p-5 flex flex-col gap-2.5">
           <h3 className="m-0 text-section font-semibold text-text">Data used</h3>
@@ -360,7 +418,7 @@ export function AnalystMethod({ run }: { run: ProjectRun }) {
       {a.code && (
         <section className="rounded-card border border-border bg-surface overflow-hidden">
           <div className="px-5 py-3.5 flex items-center justify-between gap-3 border-b border-border">
-            <span className="text-section font-semibold text-text">The code Euliv ran</span>
+            <span className="text-section font-semibold text-text">{(a.queries || []).length ? "Step 2 · The Python Euliv ran" : "The code Euliv ran"}</span>
             <button type="button" onClick={() => navigator.clipboard?.writeText(a.code || "").catch(() => undefined)} className="text-caption text-kind-answer hover:underline">Copy</button>
           </div>
           <pre className="m-0 p-5 overflow-x-auto text-[12.5px] leading-[1.6] font-mono text-secondary bg-base/50 max-h-[520px]">{a.code}</pre>
