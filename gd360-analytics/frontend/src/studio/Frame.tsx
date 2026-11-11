@@ -1,37 +1,64 @@
 // 2026-10-19 (R56, the Studio core pattern): every piece of work opens on one canvas - a header with the
 // conversation's artifact tabs, a status line and ONE green button, a tools bar for that kind of work, then the body.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Ic } from "./icons";
 import "./studio.css";
 
 export type FrameTab = { key: string; icon: string; label: string; badge?: string | null; on: boolean; onClick: () => void };
 
-/** A button that opens a small menu; closes on outside click or Escape. */
-export function MenuButton({ label, icon, className = "sd-tool", children, align = "left", caret = true, title, data, shrink = false }: {
+/** A button that opens a small menu; closes on outside click or Escape.
+ *  R67: the menu is drawn on document.body (a portal, fixed to the button) - inside the tools bar, which scrolls
+ *  sideways on narrow canvases, an absolutely-placed menu was clipped to 46px and every menu looked dead. */
+export function MenuButton({ label, icon, className = "sd-tool", children, align = "left", caret = true, title, data, shrink = false, width }: {
   label?: ReactNode; icon?: string; className?: string; children: (close: () => void) => ReactNode; align?: "left" | "right"; caret?: boolean; title?: string; data?: string;
   /** the button may shrink (a long title ellipsised) */
   shrink?: boolean;
+  /** a wider panel (a form rather than a list) */
+  width?: number;
 }) {
   const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left?: number; right?: number; maxH: number } | null>(null);
   const ref = useRef<HTMLSpanElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const place = () => {
+    const r = ref.current?.getBoundingClientRect();
+    if (!r) return;
+    const vw = window.innerWidth;
+    const top = r.bottom + 6;
+    const maxH = Math.max(160, window.innerHeight - top - 12);
+    if (align === "right") setPos({ top, right: Math.max(8, vw - r.right), maxH });
+    else setPos({ top, left: Math.min(r.left, vw - (width || 240) - 8), maxH });
+  };
+  useLayoutEffect(() => { if (open) place(); }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!open) return;
-    const off = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const off = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (ref.current?.contains(t) || menu.current?.contains(t)) return;
+      setOpen(false);
+    };
     const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    const move = () => place();
     document.addEventListener("mousedown", off);
     document.addEventListener("keydown", esc);
-    return () => { document.removeEventListener("mousedown", off); document.removeEventListener("keydown", esc); };
-  }, [open]);
+    window.addEventListener("resize", move);
+    window.addEventListener("scroll", move, true);
+    return () => {
+      document.removeEventListener("mousedown", off); document.removeEventListener("keydown", esc);
+      window.removeEventListener("resize", move); window.removeEventListener("scroll", move, true);
+    };
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <span ref={ref} style={{ position: "relative", display: "inline-flex", flex: shrink ? "0 1 auto" : "0 0 auto", minWidth: shrink ? 0 : undefined }}>
       <button type="button" className={`${className}${open ? " on" : ""}`} onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-haspopup="menu" title={title} data-sd-menu={data}>
         {icon && <Ic n={icon} />}{label}{caret && label ? <Ic n="down" className="cv" /> : null}
       </button>
-      {open && (
-        <div className="sd-menu" role="menu" style={{ top: "calc(100% + 6px)", [align]: 0 } as any}>
+      {open && pos && createPortal(
+        <div ref={menu} className="sd sd-menu sd-menu-fixed" role="menu" data-sd-menu-panel={data}
+          style={{ position: "fixed", top: pos.top, left: pos.left, right: pos.right, maxHeight: pos.maxH, overflowY: "auto", minWidth: width || undefined, width: width || undefined, zIndex: 1000 }}>
           {children(() => setOpen(false))}
-        </div>
-      )}
+        </div>, document.body)}
     </span>
   );
 }
