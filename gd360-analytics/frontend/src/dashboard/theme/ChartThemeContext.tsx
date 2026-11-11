@@ -176,7 +176,7 @@ export function ColorPinPanel({ column, value, label, close }: { column: string;
         }}
       >
         <span aria-hidden="true" className="h-9 w-9 shrink-0 rounded-ctl border border-border" style={{ background: hex ?? "transparent" }} />
-        <Input aria-label="Custom colour (hex)" placeholder="#0f5c46" value={draft} maxLength={7} mono invalid={draft.trim() !== "" && !hex} onChange={(e) => setDraft(e.target.value)} />
+        <Input aria-label="Custom colour (hex)" placeholder="#244ceb" value={draft} maxLength={7} mono invalid={draft.trim() !== "" && !hex} onChange={(e) => setDraft(e.target.value)} />
         <Button type="submit" variant="secondary" disabled={!hex}>Use</Button>
       </form>
       <div className="flex items-center justify-between gap-2">

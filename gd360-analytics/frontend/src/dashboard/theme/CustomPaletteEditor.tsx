@@ -151,7 +151,7 @@ export function CustomPaletteEditor({ value, mode, disabled = false, onApply, ac
           rows={2}
           mono
           disabled={disabled}
-          placeholder="#0f5c46, #e4002b, #ffd400 …"
+          placeholder="#244ceb, #e4002b, #ffd400 …"
           value={paste}
           onChange={(e) => { setPaste(e.target.value); setPasteNote(null); }}
           data-custom-paste=""
@@ -162,7 +162,7 @@ export function CustomPaletteEditor({ value, mode, disabled = false, onApply, ac
             disabled={disabled || !paste.trim()}
             onClick={() => {
               const parsed = parseColorList(paste);
-              if (!parsed.length) { setPasteNote("No hex colours found. Use codes like #0f5c46, separated by commas, spaces or new lines."); return; }
+              if (!parsed.length) { setPasteNote("No hex colours found. Use codes like #244ceb, separated by commas, spaces or new lines."); return; }
               const total = paste.split(/[\s,;|]+/).filter(Boolean).length;
               setPasteNote(total > parsed.length ? `Used ${parsed.length} colour${parsed.length === 1 ? "" : "s"}; ${total - parsed.length} entr${total - parsed.length === 1 ? "y was" : "ies were"} not a hex colour or past the tenth.` : null);
               setDrafts({});

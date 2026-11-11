@@ -671,7 +671,7 @@ export function divergingRamp(hueNeg: number, huePos: number, chroma: number, mo
  * brand stays red — so keep status marks on their icon + label.
  */
 export function paletteFromBrand(hex: string, mode: Mode): { categorical: Hex10; sequential: Hex7; primary: string } {
-  const brand = parseHex(hex) ?? "#0f5c46";
+  const brand = parseHex(hex) ?? "#244ceb";
   const primary = candidatesFor(brand, mode)[0];
   const h0 = hexToOklch(primary.hex).h;
   const p = hexToOklch(primary.hex);
