@@ -72,6 +72,7 @@ CHART_TYPES: list[dict] = [
     {"type": "pie", "label": "Pie", "when": "share of a whole across 3-6 categories", "needs": "needs one category and one measure"},
     {"type": "treemap", "label": "Treemap", "when": "part-to-whole across many categories (one or two levels)", "needs": "needs one or two categories and one measure"},
     {"type": "map", "label": "Map", "when": "one measure by a country column with more than 6 countries", "needs": "needs a country column"},
+    {"type": "live_map", "label": "Live map", "when": "points, cities or routes on a real street map (latitude and longitude, a city column, or origin and destination)", "needs": "needs latitude and longitude, or a city column"},
     {"type": "heatmap", "label": "Heatmap", "when": "one measure by two dimensions (segment x month, weekday x month)", "needs": "needs two dimensions"},
     {"type": "pivot", "label": "Pivot table", "when": "several measures by a row dimension and a column dimension", "needs": "needs two dimensions"},
     {"type": "scatter", "label": "Scatter", "when": "the relationship between two measures, one point per category", "needs": "needs two measures"},
@@ -87,7 +88,7 @@ CHART_TYPE_KEYS = tuple(t["type"] for t in CHART_TYPES)
 # Aliases a model or an older block may use.
 CHART_TYPE_ALIASES = {
     "column": "bar", "grouped_bar": "bar", "hbar": "horizontal_bar", "barh": "horizontal_bar", "choropleth": "map",
-    "geo": "map", "matrix": "heatmap", "heat_map": "heatmap", "pivot_table": "pivot", "100_stacked_bar": "stacked_bar_100",
+    "geo": "map", "street_map": "live_map", "point_map": "live_map", "geo_map": "live_map", "matrix": "heatmap", "heat_map": "heatmap", "pivot_table": "pivot", "100_stacked_bar": "stacked_bar_100",
     "percent_stacked_bar": "stacked_bar_100", "stacked_100": "stacked_bar_100", "distribution": "histogram",
     "progress": "bullet", "bridge": "waterfall", "step_line": "line", "tree_map": "treemap",
 }
@@ -136,6 +137,21 @@ _DATE_RE = re.compile(r"^\d{4}-\d{1,2}(-\d{1,2})?([t ].*)?$|^\d{1,2}[/.-]\d{1,2}
 _ORDINAL_NAME_RE = re.compile(r"(^|[_\s])(year|yr|month|week|weekday|day|quarter|hour|bucket|band|tier|bin|range|age)([_\s]|$)", re.IGNORECASE)
 
 
+# 2026-11-11 (live maps): columns that name a place a street map can draw (frontend recommend.ts: the same lists)
+_PLACE_NAME_RE = re.compile(r"(^|[_\s])(city|cities|town|location|locality|place|address|pincode|pin_code|zip|zipcode|zip_code|postcode|postal_code|destination|origin|pickup|dropoff|drop|venue)([_\s]|$)", re.IGNORECASE)
+_LAT_NAME_RE = re.compile(r"(^|[_\s])(lat|latitude)([_\s]|$)", re.IGNORECASE)
+_LON_NAME_RE = re.compile(r"(^|[_\s])(lng|lon|long|longitude)([_\s]|$)", re.IGNORECASE)
+
+
+def looks_like_place_name(name: str | None) -> bool:
+    return bool(name) and bool(_PLACE_NAME_RE.search(re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(name))))
+
+
+def has_lat_lon(shape: dict) -> bool:
+    names = [d.get("name") or "" for d in shape.get("dims") or []] + [m.get("name") or "" for m in shape.get("measures") or []]
+    return any(_LAT_NAME_RE.search(n) for n in names) and any(_LON_NAME_RE.search(n) for n in names)
+
+
 def is_position_word(text) -> bool:
     """A value that is a position on a scale, not an entity: a number, a
     date, a month, a weekday (frontend chartTheme.isPositionWord)."""
@@ -154,6 +170,9 @@ def dim_from_values(name: str, values: list, weights: list | None = None) -> dic
         return out
     if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in present) or all(is_position_word(v) for v in present):
         out["role"] = "ordinal"
+        return out
+    if looks_like_place_name(name) and not countries.looks_like_country_name(name):
+        out["role"] = "place"
         return out
     score = countries.country_column_score(present)
     if weights is not None and score < COUNTRY_SCORE_MIN:
@@ -176,6 +195,8 @@ def dim_from_schema(name: str, col_type: str | None, distinct: int | None = None
         role = "ordinal"
     elif countries.looks_like_country_name(name):
         role = "country"
+    elif looks_like_place_name(name):
+        role = "place"
     return {"name": name, "role": role, "distinct": distinct}
 
 
@@ -278,6 +299,11 @@ def fits(shape: dict, chart_type: str) -> tuple[bool, str | None]:
         return no
     if ct == "table":
         return True, None
+    if ct == "live_map":
+        # 2026-11-11: latitude + longitude anywhere in the result, or one place / country column
+        if has_lat_lon(shape) or (nd >= 1 and not t and dims[0].get("role") in ("place", "country")):
+            return True, None
+        return no
     if nm < 1:
         return False, "needs a measure"
     if ct == "kpi":
@@ -361,6 +387,8 @@ def recommend(shape: dict) -> dict:
 
     if shape.get("bins"):
         return _rec("histogram", "Distribution of one numeric column → histogram", "strong")
+    if has_lat_lon(shape) and not t:
+        return _rec("live_map", "Latitude and longitude → live map", "strong")
     if nm == 0:
         return _rec("table", "No measure to draw → table", "strong")
 
@@ -406,6 +434,8 @@ def recommend(shape: dict) -> dict:
                 return _rec("map", "Country column → map", "strong")
             if d.get("few_countries") is not None:
                 return _rec("bar", f"Only {_n(d['few_countries'])} countries → bars")
+            if d.get("role") == "place" and (not known or distinct >= 3):
+                return _rec("live_map", f"Place column with {_n(distinct)} values → live map" if known else "Place column → live map", "strong")
             if known and distinct <= 1:
                 return _rec("bar", "A single value → one bar")
             if d.get("role") == "ordinal":
