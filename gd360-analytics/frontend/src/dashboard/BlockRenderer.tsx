@@ -347,7 +347,7 @@ function PinStrip({ pins }: { pins: ChartPin[] }) {
       {pins.map((p) => (
         <button key={p.key} type="button" data-comment-pin={p.key} data-pin-active={p.active ? "" : undefined} title={p.title} aria-label={p.title} onClick={p.onClick}
           className={`ui-focus inline-flex h-6 items-center gap-1.5 rounded-full border pl-0.5 pr-2 text-caption ${p.active ? "border-primary bg-tint text-text" : "border-border bg-surface text-secondary hover:border-border-strong"} ${p.open ? "" : "opacity-60"}`}>
-          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-semibold text-[#07090A]" style={{ background: p.color || "rgb(var(--color-primary))" }}>{p.initials}</span>
+          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-semibold text-[#0A0A0B]" style={{ background: p.color || "rgb(var(--color-primary))" }}>{p.initials}</span>
           <span className="max-w-[140px] truncate">{p.label}</span>
           {p.count > 1 && <span className="tabular-nums text-muted">{p.count}</span>}
         </button>

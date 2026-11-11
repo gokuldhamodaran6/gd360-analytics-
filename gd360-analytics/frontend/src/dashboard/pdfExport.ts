@@ -40,7 +40,7 @@ function nextFrames(n = 2) {
   });
 }
 
-/** "rgb(7, 9, 10)" / "rgba(...)" -> [r, g, b], or null when transparent. */
+/** "rgb(10, 10, 11)" / "rgba(...)" -> [r, g, b], or null when transparent. */
 function parseRgb(v: string): [number, number, number] | null {
   const m = v.match(/rgba?\(\s*([\d.]+)[ ,]+([\d.]+)[ ,]+([\d.]+)(?:\s*[,/]\s*([\d.]+%?))?\s*\)/);
   if (!m) return null;
