@@ -5,6 +5,13 @@ import type { Point, Tone, Unit } from "../api/boards";
 
 export const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
+// R66: the board's currency (from the money columns' names: revenue_inr -> INR), set by BoardView from the page run.
+// Rupees read the Indian way: ₹4.2Cr, ₹38.5L.
+const SYMBOLS: Record<string, string> = { USD: "$", INR: "₹", EUR: "€", GBP: "£", JPY: "¥", AED: "AED ", SGD: "S$", AUD: "A$" };
+let CURRENCY = "USD";
+export function setBoardCurrency(code?: string | null) { CURRENCY = (code || "USD").toUpperCase(); }
+const symbol = () => SYMBOLS[CURRENCY] ?? "$";
+
 export function fmt(v: number | null | undefined, unit?: Unit, opts: { compact?: boolean; decimals?: number } = {}): string {
   if (v == null || Number.isNaN(v)) return "—";
   const a = Math.abs(v);
@@ -14,8 +21,14 @@ export function fmt(v: number | null | undefined, unit?: Unit, opts: { compact?:
   if (unit === "ratio") return v.toFixed(2);
   const compact = (x: number) => (x >= 1e9 ? `${(x / 1e9).toFixed(1)}B` : x >= 1e6 ? `${(x / 1e6).toFixed(1)}M` : x >= 1e4 ? `${(x / 1e3).toFixed(1)}K` : x.toLocaleString(undefined, { maximumFractionDigits: 0 }));
   if (unit === "money") {
-    if (opts.compact || a >= 1e5) return `${v < 0 ? "−" : ""}$${compact(a).replace(".0K", "K").replace(".0M", "M")}`;
-    return `${v < 0 ? "−" : ""}$${a >= 100 ? Math.round(a).toLocaleString() : a.toFixed(2)}`;
+    const sym = symbol();
+    const sign = v < 0 ? "−" : "";
+    if (CURRENCY === "INR" && (opts.compact || a >= 1e5)) {
+      const ind = a >= 1e7 ? `${(a / 1e7).toFixed(a >= 1e9 ? 0 : 1)}Cr` : a >= 1e5 ? `${(a / 1e5).toFixed(1)}L` : a >= 1e3 ? `${(a / 1e3).toFixed(1)}K` : `${Math.round(a)}`;
+      return `${sign}${sym}${ind.replace(".0Cr", "Cr").replace(".0L", "L").replace(".0K", "K")}`;
+    }
+    if (opts.compact || a >= 1e5) return `${sign}${sym}${compact(a).replace(".0K", "K").replace(".0M", "M")}`;
+    return `${sign}${sym}${a >= 100 ? Math.round(a).toLocaleString(CURRENCY === "INR" ? "en-IN" : undefined) : a.toFixed(2)}`;
   }
   if (unit === "count") return opts.compact && a >= 1e4 ? compact(a) : Math.round(v).toLocaleString();
   if (opts.compact && a >= 1e4) return compact(a);

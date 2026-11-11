@@ -4,7 +4,9 @@
 // the conversation and full-screen at /boards/:id; the Excel and PowerPoint downloads come from the same spec.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { boardsApi, type Block, type BoardSummary, type HomeData, type PageRun } from "../api/boards";
-import { cap, fmt, HBars, HeroCurve, LineArea, Spark, toneVar } from "./charts";
+import { cap, fmt, HBars, HeroCurve, LineArea, setBoardCurrency, Spark, toneVar } from "./charts";
+import { LiveMap } from "../dashboard/charts/LiveMap";
+import type { BlockResult } from "../api/client";
 import "./board.css";
 
 function ago(iso?: string): string {
@@ -105,7 +107,31 @@ function Tiers({ b, verb }: { b: Block; verb: string }) {
   );
 }
 
-function BlockView({ b, onPick, verb }: { b: Block; onPick: (kind: string, label: string) => void; verb: string }) {
+/** R66: the live street map - the rows the backend grouped (one per location, or one per place name for the browser
+ *  to place), drawn by the same LiveMap the chat and the classic dashboards use, in the board's light or dark theme. */
+function MapBlock({ b, mode }: { b: Block; mode: string }) {
+  const mKey = b.measure_label || "value";
+  const result = useMemo<BlockResult>(() => {
+    const rows = b.rows || [];
+    const hasLL = rows.some((r: any) => r.lat != null && r.lon != null);
+    const columns = [{ name: "place" }, ...(hasLL ? [{ name: "lat" }, { name: "lon" }] : []), { name: mKey }];
+    const out = rows.map((r: any) => ({ place: r.place ?? "", ...(hasLL ? { lat: r.lat, lon: r.lon } : {}), [mKey]: r.value }));
+    return { status: "ok", columns, rows: out, row_count: out.length } as BlockResult;
+  }, [b.rows, mKey]);
+  const block = useMemo(() => ({ id: b.id, title: b.title ?? null, config: {
+    chart_type: "live_map", format: b.unit === "money" ? "currency" : "number", ...(b.unit === "money" ? { currency: b.currency || "USD" } : {}),
+  } }), [b.id, b.title, b.unit, b.currency]);
+  return (
+    <div className="bd-card bd-map" data-bd-block={b.kind}>
+      <Head b={b} />
+      {(b.rows || []).length ? <LiveMap result={result} block={block as any} minHeight={(b.h || 1) >= 2 ? 440 : 320} theme={mode === "dark" ? "dark" : "light"} />
+        : <span className="bd-muted">Nothing to place on the map with these filters.</span>}
+    </div>
+  );
+}
+
+function BlockView({ b, onPick, verb, mode = "light" }: { b: Block; onPick: (kind: string, label: string) => void; verb: string; mode?: string }) {
+  if (b.type === "map") return <MapBlock b={b} mode={mode} />;
   if (b.type === "kpi") return <Kpi b={b} />;
   if (b.type === "table") return <Table b={b} />;
   if (b.type === "list") return <List b={b} />;
@@ -238,6 +264,8 @@ export function BoardView({ id, embedded = false, version = 0, onAsk, studio }: 
   }, [id, page, filters, sum]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { studio?.onPage?.(page); }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
+  // R66: every number on this page is written in the board's currency (₹ for revenue_inr) - set before the blocks draw
+  setBoardCurrency(run?.currency);
   useEffect(() => { studio?.onFilters?.(filters); }, [filters]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (run) studio?.onRun?.(run); }, [run]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -344,7 +372,7 @@ export function BoardView({ id, embedded = false, version = 0, onAsk, studio }: 
                     data-bd-cell={b.id}
                     onClick={studio?.editable ? (e) => { if ((e.target as HTMLElement).closest(".sd-float, select, a")) return; studio.onSelect(sel ? null : b); } : undefined}>
                     {ch && <span className="bd-changed" data-bd-changed="">Changed just now</span>}
-                    <BlockView b={b} onPick={onPick} verb={sum.outcome?.verb || "had the outcome"} />
+                    <BlockView b={b} onPick={onPick} verb={sum.outcome?.verb || "had the outcome"} mode={sum.palette.mode} />
                     {sel && studio?.float && studio.float(b)}
                     {sel && <><i className="sd-handle" style={{ left: -6, top: -6 }} /><i className="sd-handle" style={{ right: -6, bottom: -6 }} /></>}
                   </div>

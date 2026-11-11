@@ -253,3 +253,7 @@ button.bd-chip { cursor: pointer; }
 .bd-segs { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
 .bd-segs button { flex: 0 0 auto; white-space: nowrap; }
 @media (max-width: 760px) { .bd-sbar { padding: 12px 12px 4px; } .bd-sbar .bd-scope { margin-left: 0; width: 100%; } }
+
+/* R66: the live street map inside a designed dashboard */
+.bd-map { display: flex; flex-direction: column; gap: 10px; }
+.bd-map .eu-map { border-radius: 12px; overflow: hidden; flex: 1; }
