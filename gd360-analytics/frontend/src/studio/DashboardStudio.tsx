@@ -260,6 +260,10 @@ export function DashboardStudio({ id, name, frame, version = 0, onAsk, onPrefill
     <div className="sd sd-float" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()} data-sd-float="">
       {styleMenu(b)}
       {b.type !== "note" && b.type !== "kpi" && colourMenu(b)}
+      {(b.type === "bars" || b.type === "line") && (
+        <button type="button" className={`sd-tool${b.labels !== false ? " on" : ""}`} aria-pressed={b.labels !== false} title={b.labels !== false ? "Hide the numbers on the chart" : "Show the numbers on the chart"}
+          onClick={() => void apply(() => boardsApi.setBlock(id, b.id, { labels: b.labels === false }))} data-sd-labels=""><Ic n="h" />Labels</button>
+      )}
       <span className="sd-vr" />
       <CommentBlockButton blockId={b.id} />
       <button type="button" className="sd-tool" onClick={() => setDataOf(b)} data-sd-block-data=""><Ic n="db" />Data</button>
