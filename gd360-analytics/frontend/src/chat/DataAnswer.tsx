@@ -13,11 +13,57 @@ function leadVisual(visuals: Visual[]): Visual | null {
   return visuals.find((v) => v.type === "waterfall" || v.type === "forecast") || visuals.find((v) => v.type === "chart" && v.display !== "table") || visuals.find((v) => v.type === "chart") || null;
 }
 
-export function DataAnswer({ run, onAsk, chips, compact = false }: { run: ProjectRun; onAsk?: (q: string) => void; chips?: ReactNode; compact?: boolean }) {
+/** R67: two or three sentences, never a wall - the rest is one click away on the right. */
+function shortText(text: string | null | undefined, max = 260): string {
+  const t = String(text || "").replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  const parts = t.match(/[^.!?]+[.!?]+(\s|$)/g) || [t];
+  let out = "";
+  for (const p of parts) { if ((out + p).length > max) break; out += p; }
+  return (out || t.slice(0, max - 1) + "…").trim();
+}
+
+/** R67: the answer in the thread when its full version (charts, tables, steps) is on the right - the headline, a
+ *  short read, the main points, and one button to open it. Nothing is shown twice. */
+function CompactAnswer({ run, chips, onOpen, shown }: { run: ProjectRun; chips?: ReactNode; onOpen?: () => void; shown?: boolean }) {
+  const ans = run.result?.answer;
+  if (!ans) return null;
+  const causes = (ans.causes || []).slice(0, 3);
+  const nCharts = (run.result?.visuals || []).filter((v) => v.type !== "kpis").length;
+  return (
+    <div className="c2-a c2-brief" data-c2-answer="" data-c2-compact="" data-c2-brief="">
+      <span className="c2-brief-eb">The answer</span>
+      {ans.headline && <h2 className="c2-brief-h" data-c2-headline="">{ans.headline}</h2>}
+      {ans.answer && ans.answer !== ans.headline && <p className="c2-brief-p">{shortText(ans.answer)}</p>}
+      {causes.length > 0 && (
+        <ol className="c2-pts" data-c2-points="">
+          {causes.map((c, i) => (
+            <li key={i}><em>{i + 1}</em><span><b>{c.title}</b>{c.amount ? <span className="c2-mono"> {c.amount}{c.share ? ` · ${c.share}` : ""}</span> : null}</span></li>
+          ))}
+        </ol>
+      )}
+      {onOpen && (
+        <button type="button" className={`c2-brief-open${shown ? " on" : ""}`} onClick={onOpen} data-c2-open-answer="" data-c2-nosel="">
+          <span>{shown ? "Shown on the right" : "See the full answer on the right"}</span>
+          <small>{[nCharts ? `${nCharts} chart${nCharts === 1 ? "" : "s"}` : null, "the numbers", "how it was worked out"].filter(Boolean).join(" · ")}</small>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+        </button>
+      )}
+      {chips}
+    </div>
+  );
+}
+
+export function DataAnswer({ run, onAsk, chips, compact = false, onOpen, shown }: {
+  run: ProjectRun; onAsk?: (q: string) => void; chips?: ReactNode; compact?: boolean;
+  /** R67: the full answer is on the right - the thread keeps a short version and this opens it */
+  onOpen?: () => void; shown?: boolean;
+}) {
   const [more, setMore] = useState(false);
   if (run.status === "failed" || run.status === "stopped") {
     return <ErrorNote error={run.error} fallback="This question couldn't be answered. Please ask it again." className="rounded-card p-4" />;
   }
+  if (compact && run.status === "done" && run.result?.answer) return <CompactAnswer run={run} chips={chips} onOpen={onOpen} shown={shown} />;
   if (isAnalystRun(run)) {
     if (run.status === "done" && analystOf(run)) return <div className="c2-a"><AnalystAnswer key={run.id} run={run} />{chips}</div>;
     return <AnalystProgress run={run} compact />;
