@@ -7,7 +7,7 @@ export const C = {
   text: "rgb(var(--color-text))",
   muted: "rgb(var(--color-muted))",
   faint: "rgb(var(--color-faint))",
-  grid: "rgb(var(--chart-grid, 31 39 41))",
+  grid: "rgb(var(--chart-grid, 30 31 36))",
   border: "rgb(var(--color-border))",
   surface: "rgb(var(--color-surface))",
   warning: "rgb(var(--color-warning))",
