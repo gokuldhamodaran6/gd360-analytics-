@@ -36,7 +36,7 @@ export type Block = {
   // R66: a live street map (type "map"): rows of {place?, lat?, lon?, value}
   mode?: "points" | "places"; place_label?: string | null; measure_label?: string; currency?: string;
   // R67: how the editor asked for it to be drawn, and its colour
-  style?: string | null; color?: string | null;
+  style?: string | null; color?: string | null; labels?: boolean;
   title?: string; sub?: string; note?: string; definition?: string; text?: string;
   value?: number | null; unit?: Unit; tone?: Tone; chips?: Chip[]; spark?: (number | null)[] | null;
   curve?: { label: string; points: Point[] } | null; stack?: { label: string; value: number; tone: Tone }[];
@@ -76,7 +76,7 @@ export const boardsApi = {
   versions: (id: string) => api.get<{ versions: BoardVersion[] }>(`/v2/boards/${id}/versions`).then((r) => r.data.versions),
   restore: (id: string, index: number) => api.post<BoardEdit>(`/v2/boards/${id}/versions/restore`, { index }).then((r) => r.data),
   // R67: Power BI-style editing, pages, brand, a real thumbnail, sharing
-  setBlock: (id: string, blockId: string, body: { span?: number; h?: number; to_index?: number; style?: string; color?: string; clear_color?: boolean }) =>
+  setBlock: (id: string, blockId: string, body: { span?: number; h?: number; to_index?: number; style?: string; color?: string; clear_color?: boolean; labels?: boolean }) =>
     api.post<BoardEdit>(`/v2/boards/${id}/blocks/${blockId}/set`, body).then((r) => r.data),
   addPage: (id: string, name: string) => api.post<BoardEdit>(`/v2/boards/${id}/pages`, { name }).then((r) => r.data),
   renamePage: (id: string, pageId: string, name: string) => api.put<BoardEdit>(`/v2/boards/${id}/pages/${pageId}`, { name }).then((r) => r.data),
