@@ -427,7 +427,8 @@ def _outcome_pages(df: pd.DataFrame, spec: dict, prof: dict, dims: list[str]) ->
         ov.append({"id": "ov_list", "kind": "o_list", "span": 7, "limit": 6})
     if dims:
         ov.append({"id": "ov_table", "kind": "o_table", "span": 5 if has_scores else 12, "column": dims[0]})
-    pages = [{"id": "home", "name": "Home", "kind": "home"},
+    # R67: no Home page - a dashboard opens on its Overview (exports still get a cover from compute(..., "home"))
+    pages = [
              {"id": "overview", "name": "Overview", "blurb": f"{noun[:1].upper() + noun[1:]}, usage and risk at a glance; who to call first", "blocks": ov}]
     sp = [{"id": "sg_imp", "kind": "o_importance", "span": 6}] if spec.get("model", {}).get("importance") else []
     sp.append({"id": "sg_sig", "kind": "o_signals", "span": 6 if sp else 12, "title": "Each signal against its comparison group"})
@@ -480,7 +481,7 @@ def _generic_pages(df: pd.DataFrame, spec: dict, prof: dict, dims: list[str]) ->
         ov.append(mp)
     if dims:
         ov.append({"id": "ov_table", "kind": "g_table", "span": 12, "column": dims[0]})
-    pages = [{"id": "home", "name": "Home", "kind": "home"}, {"id": "overview", "name": "Overview",
+    pages = [{"id": "overview", "name": "Overview",
               "blurb": "The main numbers, where they come from" + (" and where they are on the map" if mp else ""), "blocks": ov}]
     if len(dims) > 1:
         pages.append({"id": "breakdown", "name": "Breakdown", "blurb": "By " + ", ".join(_lab(d) for d in dims[:4]),
@@ -594,6 +595,11 @@ def _block(df: pd.DataFrame, spec: dict, b: dict, base: pd.DataFrame) -> dict:
     kind = b["kind"]
     ent = spec["entities"]
     out = {"id": b["id"], "kind": kind, "span": b.get("span", 6), "h": b.get("h", 1), "hero": bool(b.get("hero"))}
+    # R67: how the editor asked for it to be drawn, and in which colour
+    if b.get("style"):
+        out["style"] = b["style"]
+    if b.get("color"):
+        out["color"] = b["color"]
     if b.get("title"):
         out["title"] = b["title"]
     if kind == "note":
@@ -995,7 +1001,10 @@ def compute(db: Session, user: models.User, dash: models.Dashboard, page_id: str
     spec = dash.board_spec or {}
     src = spec.get("source") or {}
     base, sampled = frame(db, user, src["source_id"], src.get("table"))
-    page = next((p for p in spec.get("pages") or [] if p["id"] == page_id), None) or (spec.get("pages") or [{}])[0]
+    real = [p for p in spec.get("pages") or [] if p.get("kind") != "home"]
+    page = next((p for p in real if p["id"] == page_id), None) or (real or [{}])[0]
+    if page_id == "home":   # the exports' cover (KPIs, pages, definitions) - no longer a page anyone opens
+        page = {"id": "home", "name": "Home", "kind": "home"}
     df, applied = _apply_filters(base, spec, filters or spec.get("default_filters"))
     _tl.currency = spec.get("currency") or "USD"
     out = {"id": dash.id, "name": dash.name, "currency": spec.get("currency") or "USD", "page": {"id": page.get("id"), "name": page.get("name")}, "rows_in_view": int(len(df)),
@@ -1218,7 +1227,7 @@ def card_state(dash: models.Dashboard) -> dict:
     pal = THEMES.get(key, THEMES["ink"]) | ({"accent": spec["accent"]} if spec.get("accent") else {})
     return {"name": dash.name, "theme": key, "theme_label": THEMES.get(key, THEMES["ink"])["label"], "accent": spec.get("accent"),
             "palette": {k: pal[k] for k in ("bg", "card", "ink", "accent", "warn", "mode")},
-            "pages": [p["name"] for p in spec.get("pages") or []]}
+            "pages": [p["name"] for p in spec.get("pages") or [] if p.get("kind") != "home"]}
 
 
 # ---- create ---------------------------------------------------------------------------------------
@@ -1250,7 +1259,9 @@ def summary(dash: models.Dashboard) -> dict:
                    "theme": spec.get("theme") or "ink", "palette": th, "themes": {k: v["label"] for k, v in THEMES.items()},
                    "source": spec.get("source"), "entities": spec.get("entities"), "outcome": spec.get("outcome"), "dates": spec.get("dates"),
                    "filters": spec.get("filters") or [], "default_filters": spec.get("default_filters") or {},
-                   "pages": [{"id": p["id"], "name": p["name"], "blurb": p.get("blurb"), "kind": p.get("kind") or "page"} for p in spec.get("pages") or []],
+                   "pages": [{"id": p["id"], "name": p["name"], "blurb": p.get("blurb"), "kind": p.get("kind") or "page", "blocks": len(p.get("blocks") or [])}
+                             for p in spec.get("pages") or [] if p.get("kind") != "home"],
+                   "accent": spec.get("accent"), "rows_at_build": spec.get("rows_at_build"),
                    "definitions": spec.get("definitions") or [], "about": spec.get("about") or [], "model": model or None,
                    "built_at": spec.get("built_at"), "sampled": spec.get("sampled"), "conversation_id": dash.source_conversation_id,
                    # R56: the canvas status line, Undo and the "changed just now" outlines

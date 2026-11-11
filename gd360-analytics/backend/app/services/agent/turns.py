@@ -453,7 +453,7 @@ def _do_dashboard(db: Session, msg: models.Message, user: models.User) -> None:
     finally:
         memguard.relieve(light=True)   # R60: the pages the build used go back to the system
     spec = dash.board_spec or {}
-    pages = [p["name"] for p in spec.get("pages") or []]
+    pages = [p["name"] for p in spec.get("pages") or [] if p.get("kind") != "home"]
     artifact = {"type": "dashboard", "id": dash.id, "name": dash.name, "url": f"/boards/{dash.id}", "board": True, "pages": len(pages)}
     src = (spec.get("source") or {}).get("name") or "your data"
     typo = None

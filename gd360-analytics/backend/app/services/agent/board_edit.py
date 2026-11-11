@@ -115,8 +115,6 @@ def layout(db: Session, dash: models.Dashboard, block_id: str, action: str) -> d
         blocks[i], blocks[j] = blocks[j], blocks[i]
         label = f"moved “{name}” {'earlier' if action == 'left' else 'later'}"
     elif action == "remove":
-        if len(blocks) <= 1:
-            raise EditError("A page needs at least one block. Remove the page in the conversation instead.")
         blocks.pop(i)
         label = f"removed “{name}”"
         return _save(db, dash, spec, label, [])
@@ -317,3 +315,117 @@ def access(db: Session, dash: models.Dashboard) -> dict:
 def changed_recently(dash: models.Dashboard, minutes: int = 10) -> dict:
     cut = datetime.utcnow() - timedelta(minutes=minutes)
     return {k: v for k, v in ((dash.board_spec or {}).get("_changed") or {}).items() if (_parse(v) or datetime.min) > cut}
+
+
+# ---- R67: Power BI-style editing - drag to move, drag to resize, chart style and colour, pages -------------------
+
+STYLES = {
+    # what a block may be drawn as, by what it holds (board.py _block's "type")
+    "bars": ("bars", "columns", "donut", "lollipop"),
+    "line": ("line", "area", "columns"),
+    "map": ("bubbles", "heat", "points"),
+}
+HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def set_block(db: Session, dash: models.Dashboard, block_id: str, *, span: int | None = None, h: int | None = None,
+              to_index: int | None = None, style: str | None = None, color: str | None = None, clear_color: bool = False) -> dict:
+    """One call for everything the editor's mouse does: a new width (1-12 columns) and height (1-3 rows) from a
+    resize handle, a new position from a drag, a chart style and a colour from the block's bar."""
+    spec = copy.deepcopy(dash.board_spec or {})
+    page, b, i = _find(spec, block_id)
+    blocks = page["blocks"]
+    name = _label(b)
+    bits: list[str] = []
+    if span is not None:
+        s = max(2, min(12, int(span)))
+        if s != int(b.get("span", 6)):
+            b["span"] = s
+            bits.append(f"resized “{name}”")
+    if h is not None:
+        hh = max(1, min(4, int(h)))
+        if hh != int(b.get("h", 1)):
+            b["h"] = hh
+            if not bits:
+                bits.append(f"resized “{name}”")
+    if to_index is not None:
+        j = max(0, min(len(blocks) - 1, int(to_index)))
+        if j != i:
+            blocks.insert(j, blocks.pop(i))
+            bits.append(f"moved “{name}”")
+    if style is not None:
+        allowed = {s for v in STYLES.values() for s in v}
+        if style not in allowed:
+            raise EditError("That chart style isn't available for this block.")
+        b["style"] = style
+        bits.append(f"drew “{name}” as {style}")
+    if clear_color:
+        b.pop("color", None)
+        bits.append(f"reset the colour of “{name}”")
+    elif color is not None:
+        if not HEX.match(color):
+            raise EditError("Pick a colour like #2D5BFF.")
+        b["color"] = color.upper()
+        bits.append(f"coloured “{name}” {color.upper()}")
+    if not bits:
+        return {"change": "nothing changed", "changed": []}
+    return _save(db, dash, spec, "; ".join(bits), [block_id])
+
+
+def add_page(db: Session, dash: models.Dashboard, name: str) -> dict:
+    spec = copy.deepcopy(dash.board_spec or {})
+    nm = (name or "").strip()[:40] or "New page"
+    pages = spec.setdefault("pages", [])
+    if any((p.get("name") or "").lower() == nm.lower() for p in pages):
+        raise EditError(f"There is already a page called “{nm}”.")
+    pid = re.sub(r"[^a-z0-9]+", "_", nm.lower()).strip("_")[:24] or "page"
+    pid = f"{pid}_{int(time.time() * 1000) % 100000}"
+    pages.append({"id": pid, "name": nm, "blurb": "", "blocks": []})
+    out = _save(db, dash, spec, f"added the page “{nm}”", [])
+    return {**out, "page_id": pid}
+
+
+def rename_page(db: Session, dash: models.Dashboard, page_id: str, name: str) -> dict:
+    spec = copy.deepcopy(dash.board_spec or {})
+    p = next((p for p in spec.get("pages") or [] if p["id"] == page_id), None)
+    if p is None:
+        raise EditError("That page is not on this dashboard any more.")
+    nm = (name or "").strip()[:40]
+    if not nm:
+        raise EditError("Give the page a name.")
+    old = p.get("name")
+    p["name"] = nm
+    return {**_save(db, dash, spec, f"renamed the page “{old}” to “{nm}”", []), "page_id": page_id}
+
+
+def delete_page(db: Session, dash: models.Dashboard, page_id: str) -> dict:
+    spec = copy.deepcopy(dash.board_spec or {})
+    pages = [p for p in spec.get("pages") or [] if p.get("kind") != "home"]
+    p = next((p for p in pages if p["id"] == page_id), None)
+    if p is None:
+        raise EditError("That page is not on this dashboard any more.")
+    if len(pages) <= 1:
+        raise EditError("A dashboard needs at least one page.")
+    spec["pages"] = [x for x in spec.get("pages") or [] if x["id"] != page_id]
+    return _save(db, dash, spec, f"removed the page “{p.get('name')}”", [])
+
+
+def set_brand(db: Session, dash: models.Dashboard, *, accent: str | None, mode: str | None) -> dict:
+    """R67: a company's own look - its brand colour on every chart, on a light or a dark ground."""
+    spec = copy.deepcopy(dash.board_spec or {})
+    bits = []
+    if accent is not None:
+        if accent and not HEX.match(accent):
+            raise EditError("Pick a colour like #2D5BFF.")
+        if accent:
+            spec["accent"] = accent.upper()
+            bits.append(f"brand colour {accent.upper()}")
+        else:
+            spec.pop("accent", None)
+            bits.append("theme colour back to default")
+    if mode in ("light", "dark"):
+        spec["theme"] = spec.get("theme") if board.THEMES.get(spec.get("theme") or "", {}).get("mode") == mode else ("studio" if mode == "light" else "graphite")
+        bits.append(f"{mode} ground")
+    if not bits:
+        return {"change": "nothing changed", "changed": []}
+    return _save(db, dash, spec, "set the " + " on a ".join(bits), [])
