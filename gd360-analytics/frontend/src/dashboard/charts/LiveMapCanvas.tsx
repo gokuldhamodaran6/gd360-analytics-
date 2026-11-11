@@ -179,6 +179,7 @@ export default function LiveMapCanvas({ result, block, minHeight = 320, compact 
   const [built, setBuilt] = useState<Built | null>(null);
   const defaultMode: Mode = !plan ? "points" : plan.kind === "routes" ? "routes" : plan.kind === "points" ? ((result.rows?.length ?? 0) > 300 ? "heat" : plan.measure ? "bubbles" : "points") : "bubbles";
   const [mode, setMode] = useState<Mode>((block.config?.map_mode as Mode) || defaultMode);
+  useEffect(() => { if (block.config?.map_mode) setMode(block.config.map_mode as Mode); }, [block.config?.map_mode]);
   const fmt = useMemo(() => {
     if (!plan?.measure) return PLAIN_FORMAT;
     // a caller that knows the number's meaning (a designed dashboard: "currency" in INR) says so in config; it wins
@@ -197,7 +198,11 @@ export default function LiveMapCanvas({ result, block, minHeight = 320, compact 
   useEffect(() => {
     if (!box.current || !built) return;
     const map = new maplibregl.Map({
-      container: box.current, style: eulivStyle(theme), center: [0, 20], zoom: 1.2, attributionControl: { compact: true },
+      // R67: no attribution banner across the map - the credit (required by OpenStreetMap's licence) sits behind a
+      // small "i" in the corner, as MapLibre's own compact control does; preserveDrawingBuffer lets the dashboard
+      // draw a real thumbnail of itself, map included
+      container: box.current, style: eulivStyle(theme), center: [0, 20], zoom: 1.2, attributionControl: false,
+      canvasContextAttributes: { preserveDrawingBuffer: true },
       cooperativeGestures: !compact, interactive: !compact, dragRotate: false, pitchWithRotate: false,
     });
     mapRef.current = map;
@@ -209,7 +214,7 @@ export default function LiveMapCanvas({ result, block, minHeight = 320, compact 
     map.once("style.load", () => {
       addLayers(map, built, mode);
       const b = boundsOf([...built.points, ...built.lines]);
-      if (b) map.fitBounds(b, { padding: compact ? 16 : 56, maxZoom: 11, duration: 0 });
+      if (b) map.fitBounds(b, { padding: compact ? 16 : { top: 54, bottom: 36, left: 36, right: 36 }, maxZoom: 11, duration: 0 });
       for (const id of ["eu-bubbles", "eu-dots", "eu-routes"]) {
         map.on("mousemove", id, (e) => {
           const f = e.features?.[0];
@@ -249,6 +254,8 @@ export default function LiveMapCanvas({ result, block, minHeight = 320, compact 
             ))}
             <button type="button" onClick={() => { const b = built && boundsOf([...built.points, ...built.lines]); if (b && mapRef.current) mapRef.current.fitBounds(b, { padding: 56, maxZoom: 11 }); }} aria-label="Fit the map to the data">Fit</button>
           </div>
+          <a className="eu-map-credit" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer"
+            title="Map © OpenFreeMap · © OpenMapTiles · Data © OpenStreetMap contributors" aria-label="Map credits">i</a>
           <div className="eu-map-legend">
             {built ? (
               <span>
