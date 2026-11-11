@@ -52,6 +52,48 @@ MONEY = re.compile(r"amt|amount|revenue|sales|spend|price|cost|profit|margin|lim
 TENURE = re.compile(r"months?_on|tenure|months_on_book|age_days|since|lead_time", re.I)
 DIM_PRIORITY = ("category", "segment", "plan", "tier", "type", "product", "region", "channel", "market", "country", "city", "store", "hotel",
                 "income", "education", "status", "team", "department", "gender", "marital")
+# 2026-11-11 (R66, live maps on dashboards): where a row is - a latitude/longitude pair (never a measure: summing
+# latitudes means nothing) or a place column the backend can put on the map (services/geo.py)
+GEO_LAT = re.compile(r"(^|[_\s.-])(lat|latitude)([_\s.-]|$)", re.I)
+GEO_LON = re.compile(r"(^|[_\s.-])(lng|lon|long|longitude)([_\s.-]|$)", re.I)
+PLACE = re.compile(r"(^|[_\s.-])(city|cities|town|district|location|locality|place|address|pincode|pin_code|zip|zipcode|zip_code|"
+                   r"postcode|postal_code|state|province|country|market|area|branch|store_city|outlet)([_\s.-]|$)", re.I)
+# a column that is already an average, a duration or a score: its total means nothing, so tiles, bars and trends average it
+MEAN_LIKE = re.compile(r"(^|[_\s])(avg|average|mean|median)([_\s]|$)|rating|score|(^|_)min(s)?$|minutes?|duration|(^|_)age(_|$)|"
+                       r"(^|_)days?$|wait|latency|temperature|_pct$|percent|(^|_)hours?$|_hrs?$|speed", re.I)
+CURRENCIES = ((r"(^|_)(inr|rupees?|rs)(_|$)|₹", "INR"), (r"(^|_)(eur|euros?)(_|$)|€", "EUR"), (r"(^|_)(gbp|pounds?)(_|$)|£", "GBP"),
+              (r"(^|_)(jpy|yen)(_|$)|¥", "JPY"), (r"(^|_)(aed|dirhams?)(_|$)", "AED"), (r"(^|_)(sgd)(_|$)", "SGD"), (r"(^|_)(aud)(_|$)", "AUD"))
+SYMBOLS = {"USD": "$", "INR": "₹", "EUR": "€", "GBP": "£", "JPY": "¥", "AED": "AED ", "SGD": "S$", "AUD": "A$"}
+_tl = threading.local()
+
+
+def _lab(col) -> str:
+    """analysis.label_of without the currency code the column carries ("revenue_inr" -> "revenue": the ₹ is on the number)
+    and with a bare "min" read as minutes ("avg_delivery_min" -> "average delivery minutes")."""
+    lab = analysis.label_of(col)
+    lab = re.sub(r"\s+(inr|usd|eur|gbp|jpy|aed|sgd|aud|rs)$", "", lab, flags=re.I)
+    lab = re.sub(r"^(inr|usd|eur|gbp)\s+", "", lab, flags=re.I)
+    return re.sub(r"\bmin$", "minutes", lab)
+
+
+def _agg_for(col: str | None) -> str:
+    """sum for amounts and counts; mean for rates, averages, durations and scores."""
+    if not col:
+        return "sum"
+    return "mean" if (_unit(col) == "ratio" or MEAN_LIKE.search(str(col))) else "sum"
+
+
+def currency_of(columns) -> str:
+    for c in columns:
+        if MONEY.search(str(c)) or re.search(r"inr|eur|gbp|jpy|aed|sgd|aud|usd", str(c), re.I):
+            for pat, sym in CURRENCIES:
+                if re.search(pat, str(c), re.I):
+                    return sym
+    return "USD"
+
+
+def _snake(c: str) -> str:
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(c))
 
 
 # ---- json safety ---------------------------------------------------------------------------
@@ -159,12 +201,17 @@ def profile(df: pd.DataFrame) -> dict:
     """{ids, measures, dims, date, outcome?}"""
     n = len(df)
     ids, measures, dims = [], [], []
+    geo: dict = {}
+    places: list[str] = []
     for c in df.columns:
         s = df[c]
         nun = s.nunique(dropna=True)
         if nun <= 1:
             continue
-        if n > 50 and nun >= 0.9 * n and not pd.api.types.is_float_dtype(s):
+        # R66: a whole-number column of mostly different values is an id only when it is not a number to add up
+        # (revenue_inr in rupees is nearly unique on every row and is still the headline measure)
+        if n > 50 and nun >= 0.9 * n and not pd.api.types.is_float_dtype(s) and \
+                (not pd.api.types.is_numeric_dtype(s) or analysis.ID_NAMES.search(str(c)) or not (MONEY.search(str(c)) or MEAN_LIKE.search(str(c)))):
             ids.append(c)
             continue
         if analysis.ID_NAMES.search(str(c)) and nun > 0.5 * n:
@@ -175,14 +222,25 @@ def profile(df: pd.DataFrame) -> dict:
         if pd.api.types.is_numeric_dtype(s):
             if re.search(r"naive_bayes|classifier", str(c), re.I):
                 continue
+            sc = _snake(c).lower()
+            x = pd.to_numeric(s, errors="coerce")
+            if GEO_LAT.search(sc) and x.between(-90, 90).mean() >= 0.95:
+                geo.setdefault("lat", c)
+                continue
+            if GEO_LON.search(sc) and x.between(-180, 180).mean() >= 0.95:
+                geo.setdefault("lon", c)
+                continue
             if nun > 10 or pd.api.types.is_float_dtype(s):
                 measures.append(c)
             continue
+        if PLACE.search(_snake(c).lower()) and nun >= 2 and not analysis.DATE_NAMES.search(str(c)):
+            places.append(c)
         if 2 <= nun <= 30 and not analysis.DATE_NAMES.search(str(c)):
             dims.append(c)
     dims.sort(key=lambda c: (next((i for i, w in enumerate(DIM_PRIORITY) if w in str(c).lower()), len(DIM_PRIORITY)), df[c].nunique()))
     measures.sort(key=lambda c: (0 if MONEY.search(str(c)) else 1))
-    out = {"ids": ids, "measures": measures, "dims": dims, "date": _date_column(df)}
+    out = {"ids": ids, "measures": measures, "dims": dims, "date": _date_column(df),
+           "geo": geo if len(geo) == 2 else None, "places": places}
     cands = analysis._binary_candidates(df)
     named = [c for c, sc in cands if sc >= 2.0]
     if named:
@@ -193,10 +251,10 @@ def profile(df: pd.DataFrame) -> dict:
 
 def short(col: str) -> str:
     """Total_Trans_Ct -> "transaction count": the label without the words every column of a kind repeats."""
-    lab = analysis.label_of(col)
+    lab = _lab(col)
     lab = re.sub(r"^(total|avg|average|sum of|number of)\s+", "", lab)
     lab = re.sub(r"\s+in 12 months$", "", lab) if len(lab) > 22 else lab
-    return lab or analysis.label_of(col)
+    return lab or _lab(col)
 
 
 def _cap(s: str) -> str:
@@ -238,7 +296,7 @@ def _title_for(outcome: dict | None, entities: str, source_name: str, measures: 
             return "Cancellation pulse", f"Which {entities} cancel, why, and which are at risk now"
         return f"{noun[:1].upper() + noun[1:]} pulse", f"What drives {noun}, and where the risk is now"
     if measures:
-        m = analysis.label_of(measures[0])
+        m = _lab(measures[0])
         return f"{m[:1].upper() + m[1:]} overview", f"{source_name}: the main numbers, where they come from, and how they move"
     return f"{source_name} overview", "The main numbers in this table"
 
@@ -260,6 +318,8 @@ def design(db: Session, user: models.User, source_id: str, table: str | None, *,
         t = (entry["table"] or "").lower()
         entities = next((pl for w, pl in (("order", "orders"), ("booking", "bookings"), ("customer", "customers"), ("transaction", "transactions"),
                                          ("invoice", "invoices"), ("ticket", "tickets"), ("employee", "employees"), ("session", "sessions")) if w in t), "rows")
+    if entities != "rows" and any(re.sub(r"s$", "", str(m).lower()) == re.sub(r"s$", "", entities) for m in prof["measures"]):
+        entities = "rows"   # R66: a table with an "orders" column counts orders in it; its rows are not orders
     spec: dict = {"version": 1, "theme": theme if theme in THEMES else "studio", "entities": entities,
                   "source": {"source_id": entry["source_id"], "table": entry["table"], "name": entry["source"]},
                   "rows_at_build": int(len(df)), "sampled": bool(sampled), "built_at": datetime.utcnow().isoformat() + "Z",
@@ -298,12 +358,15 @@ def design(db: Session, user: models.User, source_id: str, table: str | None, *,
         title, subtitle = _title_for(None, entities, entry["source"], prof["measures"])
         spec["title"], spec["subtitle"] = name or title, subtitle
         spec["pages"] = _generic_pages(df, spec, prof, dims)
-        spec["definitions"] = [f"{analysis.label_of(m)} = sum over the {entities} in view" for m in prof["measures"][:3]] + \
-            ([f"periods follow {analysis.label_of(prof['date'])}; the latest month is compared with the month before and the same month a year earlier"] if prof["date"] else [])
+        spec["definitions"] = [f"{_lab(m)} = {'sum' if _agg_for(m) == 'sum' else 'average'} over the {entities} in view" for m in prof["measures"][:3]] + \
+            ([f"periods follow {_lab(prof['date'])}; the latest month is compared with the month before and the same month a year earlier"] if prof["date"] else [])
     spec["definitions"] = [_cap(d) for d in spec.get("definitions") or []]
+    spec["currency"] = currency_of(prof["measures"])
+    if prof.get("geo") or prof.get("places"):
+        spec["geo"] = {"lat": (prof.get("geo") or {}).get("lat"), "lon": (prof.get("geo") or {}).get("lon"), "places": prof.get("places") or []}
     spec["filters"] = _filters(df, spec, dims)
     spec["about"] = [f"{entry['source']} · {entry['table']} · {len(df):,} rows · {len(df.columns)} columns" + (" (a fair sample)" if sampled else ""),
-                     ("Dates: " + analysis.label_of(prof["date"]) + ", so numbers compare periods") if prof.get("date")
+                     ("Dates: " + _lab(prof["date"]) + ", so numbers compare periods") if prof.get("date")
                      else "No dates in the table, so comparisons are group against group, not period over period"]
     if spec.get("model", {}).get("leaks"):
         lk = spec["model"]["leaks"]
@@ -316,7 +379,7 @@ def _filters(df: pd.DataFrame, spec: dict, dims: list[str]) -> list[dict]:
     out = []
     for c in dims[:4]:
         vals = [str(v) for v in df[c].dropna().astype(str).value_counts().index[:30]]
-        out.append({"key": c, "label": analysis.label_of(c)[:1].upper() + analysis.label_of(c)[1:], "column": c, "values": sorted(vals, key=_natural)})
+        out.append({"key": c, "label": _lab(c)[:1].upper() + _lab(c)[1:], "column": c, "values": sorted(vals, key=_natural)})
     if spec.get("model", {}).get("scores"):
         out.append({"key": "__risk", "label": "Risk tier", "column": None, "values": ["High", "Medium", "Low"]})
     if spec.get("dates"):
@@ -376,11 +439,24 @@ def _outcome_pages(df: pd.DataFrame, spec: dict, prof: dict, dims: list[str]) ->
         for i, d in enumerate(dims[:4]):
             seg.append({"id": f"seg_bars{i}", "kind": "o_dim", "span": 6, "column": d})
         seg.append({"id": "seg_table", "kind": "o_table", "span": 12, "column": dims[0]})
-        pages.append({"id": "segments", "name": "Segments", "blurb": f"{noun[:1].upper() + noun[1:]} by " + ", ".join(analysis.label_of(d) for d in dims[:3]), "blocks": seg})
+        pages.append({"id": "segments", "name": "Segments", "blurb": f"{noun[:1].upper() + noun[1:]} by " + ", ".join(_lab(d) for d in dims[:3]), "blocks": seg})
     if has_scores:
         pages.append({"id": "customers", "name": ent[:1].upper() + ent[1:], "blurb": f"Risk tiers and the {ent} to contact first",
                       "blocks": [{"id": "cu_tiers", "kind": "o_tiers", "span": 5}, {"id": "cu_list", "kind": "o_list", "span": 7, "limit": 25}]})
     return pages
+
+
+def _map_block(prof: dict, measure: str | None, bid: str, place: str | None = None) -> dict | None:
+    """R66: a live street map when the table says where each row is - its own latitude/longitude, else a place column."""
+    geo = prof.get("geo") or {}
+    places = prof.get("places") or []
+    place = place or (places[0] if places else None)
+    if not geo and not place:
+        return None
+    blk = {"id": bid, "kind": "g_map", "span": 12, "h": 2, "measure": measure, "place": place}
+    if geo:
+        blk.update(lat=geo["lat"], lon=geo["lon"])
+    return blk
 
 
 def _generic_pages(df: pd.DataFrame, spec: dict, prof: dict, dims: list[str]) -> list[dict]:
@@ -388,21 +464,26 @@ def _generic_pages(df: pd.DataFrame, spec: dict, prof: dict, dims: list[str]) ->
     date = spec.get("dates", {}).get("column")
     ov = []
     if ms:
-        ov.append({"id": "ov_hero", "kind": "g_measure", "span": 6, "h": 2, "hero": True, "column": ms[0]})
+        ov.append({"id": "ov_hero", "kind": "g_measure", "span": 6, "h": 2, "hero": True, "column": ms[0], "agg": _agg_for(ms[0])})
     ov.append({"id": "ov_count", "kind": "g_count", "span": 3})
-    small = [{"id": f"ov_m{i}", "kind": "g_measure", "span": 3, "column": m, "agg": "mean" if _unit(m) == "ratio" else "sum"} for i, m in enumerate(ms[1:3])]
+    small = [{"id": f"ov_m{i}", "kind": "g_measure", "span": 3, "column": m, "agg": _agg_for(m)} for i, m in enumerate(ms[1:3])]
     if ms:
         # the fourth tile: the main measure per day when there are dates, per row otherwise
-        small.append({"id": "ov_rate", "kind": "g_measure", "span": 3, "column": ms[0], "agg": "per_day" if date else "mean"})
+        small.append({"id": "ov_rate", "kind": "g_measure", "span": 3, "column": ms[0], "agg": "per_day" if date and _agg_for(ms[0]) == "sum" else "mean"})
     ov += small[:3]
     if date and ms:
         ov.append({"id": "ov_trend", "kind": "g_trend", "span": 7, "column": ms[0]})
     if dims:
         ov.append({"id": "ov_bars", "kind": "g_dim", "span": 5 if date else 6, "column": dims[0], "measure": ms[0] if ms else None})
+    mp = _map_block(prof, ms[0] if ms else None, "ov_map")
+    if mp:
+        ov.append(mp)
+    if dims:
         ov.append({"id": "ov_table", "kind": "g_table", "span": 12, "column": dims[0]})
-    pages = [{"id": "home", "name": "Home", "kind": "home"}, {"id": "overview", "name": "Overview", "blurb": "The main numbers and where they come from", "blocks": ov}]
+    pages = [{"id": "home", "name": "Home", "kind": "home"}, {"id": "overview", "name": "Overview",
+              "blurb": "The main numbers, where they come from" + (" and where they are on the map" if mp else ""), "blocks": ov}]
     if len(dims) > 1:
-        pages.append({"id": "breakdown", "name": "Breakdown", "blurb": "By " + ", ".join(analysis.label_of(d) for d in dims[:4]),
+        pages.append({"id": "breakdown", "name": "Breakdown", "blurb": "By " + ", ".join(_lab(d) for d in dims[:4]),
                       "blocks": [{"id": f"bd{i}", "kind": "g_dim", "span": 6, "column": d, "measure": ms[0] if ms else None} for i, d in enumerate(dims[:4])]})
     if date and ms:
         pages.append({"id": "trends", "name": "Trends", "blurb": "Month by month, against the year before",
@@ -593,7 +674,7 @@ def _block(df: pd.DataFrame, spec: dict, b: dict, base: pd.DataFrame) -> dict:
             c = b.get("column")
             bd = _bands(pd.to_numeric(df[c], errors="coerce"))
             if not bd:
-                out.update(type="empty", title=analysis.label_of(c), text="Too few distinct values to band.")
+                out.update(type="empty", title=_lab(c), text="Too few distinct values to band.")
             else:
                 band, labels = bd
                 g = y.groupby(band).agg(["mean", "size"])
@@ -607,7 +688,7 @@ def _block(df: pd.DataFrame, spec: dict, b: dict, base: pd.DataFrame) -> dict:
             g = y.groupby(per).agg(["mean", "size"]).sort_index()
             g = g[g["size"] >= 10].tail(18)
             pts = [{"label": p.strftime("%b %y"), "value": _f(r["mean"] * 100, 1), "n": int(r["size"])} for p, r in g.iterrows()]
-            out.update(type="line", title=f"{noun[:1].upper() + noun[1:]} rate by month", sub=f"by {analysis.label_of(b['column'])} · % who {verb}",
+            out.update(type="line", title=f"{noun[:1].upper() + noun[1:]} rate by month", sub=f"by {_lab(b['column'])} · % who {verb}",
                        unit="pct", points=pts, baseline={"value": all_rate, "label": f"All {all_rate}%"})
         elif kind == "o_dim":
             c = b["column"]
@@ -623,7 +704,7 @@ def _block(df: pd.DataFrame, spec: dict, b: dict, base: pd.DataFrame) -> dict:
             rows = [{"label": str(k), "value": _f(r["mean"] * 100, 1), "n": int(r["size"]), "count": int(r["sum"]), "small": int(r["size"]) < 30,
                      "tone": tone_of(r["mean"] * 100, int(r["size"]))} for k, r in g.iterrows()]
             rows.sort(key=lambda r: _natural(r["label"]))
-            lab = analysis.label_of(c)
+            lab = _lab(c)
             out.update(type="bars", title=f"{noun[:1].upper() + noun[1:]} by {lab}",
                        sub=f"% who {verb} · coloured when more than {margin:.1f} points from all {ent}",
                        unit="pct", rows=rows, baseline={"value": all_rate, "label": f"All {all_rate}%"}, show_n=True, n_label=ent)
@@ -635,7 +716,7 @@ def _block(df: pd.DataFrame, spec: dict, b: dict, base: pd.DataFrame) -> dict:
             for m in top_m:
                 g[m] = pd.to_numeric(df[m], errors="coerce").groupby(s).mean()
             g = g[g["n"] >= 1].sort_values("n", ascending=False).head(12)
-            cols = [{"key": "label", "label": analysis.label_of(c)[:1].upper() + analysis.label_of(c)[1:], "align": "left"},
+            cols = [{"key": "label", "label": _lab(c)[:1].upper() + _lab(c)[1:], "align": "left"},
                     {"key": "n", "label": ent[:1].upper() + ent[1:], "unit": "count"}, {"key": "pos", "label": verb[:1].upper() + verb[1:], "unit": "count"},
                     {"key": "rate", "label": "Rate", "unit": "pct"}]
             cols += [{"key": m, "label": "Avg " + short(m), "unit": _unit(m)} for m in top_m]
@@ -650,7 +731,7 @@ def _block(df: pd.DataFrame, spec: dict, b: dict, base: pd.DataFrame) -> dict:
             total = {"label": "All", "n": int(len(y)), "pos": int(y.sum()), "rate": all_rate, "vs": None}
             for m in top_m:
                 total[m] = _f(pd.to_numeric(df[m], errors="coerce").mean(), 2)
-            out.update(type="table", title=f"By {analysis.label_of(c)}", sub=f"vs all = rate minus {all_rate}%", columns=cols, rows=rows, total=total)
+            out.update(type="table", title=f"By {_lab(c)}", sub=f"vs all = rate minus {all_rate}%", columns=cols, rows=rows, total=total)
         elif kind == "o_list":
             sc = _scores(spec, base)
             if sc is None:
@@ -699,17 +780,23 @@ def _block(df: pd.DataFrame, spec: dict, b: dict, base: pd.DataFrame) -> dict:
         c = b["column"]
         agg = b.get("agg") or "sum"
         x = pd.to_numeric(df[c], errors="coerce")
-        title = analysis.label_of(c)[:1].upper() + analysis.label_of(c)[1:]
+        title = _lab(c)[:1].upper() + _lab(c)[1:]
         if agg == "per_day" and spec.get("dates"):
             d = _dates(df, spec["dates"]["column"]).dt.normalize()
-            daily = x.groupby(d).sum()
-            out.update(type="kpi", title=f"{title} per day", sub="average day", value=_f(daily.mean(), 2), unit=_unit(c),
+            # R66: a table with one date per month (monthly exports) is read per month, never "per day"
+            u = pd.Series(sorted(d.dropna().unique()))
+            monthly = len(u) >= 3 and float(u.diff().dt.days.median()) >= 25
+            per, pl = ("month", "months") if monthly else ("day", "days")
+            daily = x.groupby(d.dt.to_period("M") if monthly else d).sum()
+            out.update(type="kpi", title=f"{title} per {per}", sub=f"average {per}", value=_f(daily.mean(), 2), unit=_unit(c),
                        spark=[_f(v, 2) for v in daily.tail(30).tolist()] if len(daily) > 3 else None,
-                       chips=[{"text": f"best {_fmt(daily.max(), _unit(c))}", "tone": "good"}, {"text": f"{len(daily):,} days", "tone": "neutral"}],
-                       definition=f"sum of {c} per day, averaged over {len(daily):,} days")
+                       chips=[{"text": f"best {_fmt(daily.max(), _unit(c))}", "tone": "good"}, {"text": f"{len(daily):,} {pl}", "tone": "neutral"}],
+                       definition=f"sum of {c} per {per}, averaged over {len(daily):,} {pl}")
         else:
             val = x.sum() if agg == "sum" else x.mean()
-            out.update(type="kpi", title=title if agg == "sum" else f"{title} per {ent[:-1] if ent.endswith('s') else ent}", sub="total" if agg == "sum" else "average",
+            mean_title = title if re.match(r"(?i)(average|avg|mean|median)\b", title) else (
+                f"Average {title[:1].lower() + title[1:]}" if ent == "rows" or MEAN_LIKE.search(str(c)) else f"{title} per {ent[:-1] if ent.endswith('s') else ent}")
+            out.update(type="kpi", title=title if agg == "sum" else mean_title, sub="total" if agg == "sum" else "average",
                        value=_f(val, 2), unit=_unit(c), spark=_spark(df, spec, c, agg=agg), chips=_period_chips(df, spec, c, agg),
                        definition=f"{agg} of {c}")
         if b.get("hero") and spec.get("dates"):
@@ -717,34 +804,42 @@ def _block(df: pd.DataFrame, spec: dict, b: dict, base: pd.DataFrame) -> dict:
             out["curve"] = {"label": "by month", "points": pts[-12:]}
     elif kind == "g_trend":
         c = b["column"]
-        pts = _monthly(df, spec, c, "sum")
-        prev = _monthly(df, spec, c, "sum", shift_year=True)
-        lab = analysis.label_of(c)
-        out.update(type="line", title=f"{lab[:1].upper() + lab[1:]} by month", sub="last 12 months · dashed line is the year before", unit=_unit(c),
+        agg = _agg_for(c)
+        pts = _monthly(df, spec, c, agg)
+        prev = _monthly(df, spec, c, agg, shift_year=True)
+        lab = _lab(c)
+        out.update(type="line", title=f"{lab[:1].upper() + lab[1:]} by month",
+                   sub=("average per month · " if agg == "mean" else "") + "last 12 months · dashed line is the year before", unit=_unit(c),
                    points=pts[-12:], compare=prev[-12:] if prev else None)
     elif kind == "g_dim":
         c, m = b["column"], b.get("measure")
         s = df[c].astype(str).where(df[c].notna())
         if m:
-            g = pd.to_numeric(df[m], errors="coerce").groupby(s).sum().sort_values(ascending=False).head(10)
+            agg = _agg_for(m)
+            x = pd.to_numeric(df[m], errors="coerce").groupby(s)
+            g = (x.sum() if agg == "sum" else x.mean()).sort_values(ascending=False).head(10)
             tot = float(g.sum()) or 1.0
-            rows = [{"label": str(k), "value": _f(v, 2), "share": _f(v / tot * 100, 1), "tone": "accent"} for k, v in g.items()]
-            lab = analysis.label_of(m)
-            out.update(type="bars", title=f"{lab[:1].upper() + lab[1:]} by {analysis.label_of(c)}", sub="total · label shows share of all", unit=_unit(m), rows=rows, show_share=True)
+            rows = [{"label": str(k), "value": _f(v, 2), "share": _f(v / tot * 100, 1) if agg == "sum" else None, "tone": "accent"} for k, v in g.items()]
+            lab = _lab(m)
+            out.update(type="bars", title=f"{lab[:1].upper() + lab[1:]} by {_lab(c)}",
+                       sub="total · label shows share of all" if agg == "sum" else "average per row", unit=_unit(m), rows=rows, show_share=agg == "sum")
         else:
             g = s.value_counts().head(10)
             rows = [{"label": str(k), "value": int(v), "tone": "accent"} for k, v in g.items()]
-            out.update(type="bars", title=f"{ent[:1].upper() + ent[1:]} by {analysis.label_of(c)}", sub="count", unit="count", rows=rows)
+            out.update(type="bars", title=f"{ent[:1].upper() + ent[1:]} by {_lab(c)}", sub="count", unit="count", rows=rows)
+    elif kind == "g_map":
+        out.update(_map_compute(df, spec, b))
     elif kind == "g_table":
         c = b["column"]
         s = df[c].astype(str).where(df[c].notna())
         ms = [m for m in (spec.get("_measures") or [])] or [x["column"] for p in spec["pages"] for x in p.get("blocks", []) if x["kind"] == "g_measure"][:3]
         g = pd.DataFrame({"n": s.value_counts()})
         for m in ms:
-            g[m] = pd.to_numeric(df[m], errors="coerce").groupby(s).sum()
+            x = pd.to_numeric(df[m], errors="coerce").groupby(s)
+            g[m] = x.sum() if _agg_for(m) == "sum" else x.mean()
         g = g.sort_values("n", ascending=False).head(12)
-        cols = [{"key": "label", "label": analysis.label_of(c)[:1].upper() + analysis.label_of(c)[1:], "align": "left"}, {"key": "n", "label": "Rows", "unit": "count"}]
-        cols += [{"key": m, "label": analysis.label_of(m)[:1].upper() + analysis.label_of(m)[1:], "unit": _unit(m)} for m in ms]
+        cols = [{"key": "label", "label": _lab(c)[:1].upper() + _lab(c)[1:], "align": "left"}, {"key": "n", "label": "Rows", "unit": "count"}]
+        cols += [{"key": m, "label": _lab(m)[:1].upper() + _lab(m)[1:] + (" (avg)" if _agg_for(m) == "mean" and not re.search(r"avg|average|mean", str(m), re.I) else ""), "unit": _unit(m)} for m in ms]
         main = ms[0] if ms else None
         if main:
             cols.append({"key": "share", "label": "Share", "unit": "pct"})
@@ -759,11 +854,50 @@ def _block(df: pd.DataFrame, spec: dict, b: dict, base: pd.DataFrame) -> dict:
             rows.append(row)
         total = {"label": "All", "n": int(len(df))}
         for m in ms:
-            total[m] = _f(pd.to_numeric(df[m], errors="coerce").sum(), 2)
+            x = pd.to_numeric(df[m], errors="coerce")
+            total[m] = _f(x.sum() if _agg_for(m) == "sum" else x.mean(), 2)
         if main:
             total["share"] = 100.0
-        out.update(type="table", title=f"By {analysis.label_of(c)}", sub="totals in view", columns=cols, rows=rows, total=total)
+        out.update(type="table", title=f"By {_lab(c)}", sub="totals in view", columns=cols, rows=rows, total=total)
     return out
+
+
+def _map_compute(df: pd.DataFrame, spec: dict, b: dict) -> dict:
+    """R66: rows for the live map - one per location (latitude/longitude, with its place name) when the table has
+    coordinates, else one per place name for the browser to place (POST /geo/resolve). Biggest first, capped."""
+    m, place, lat, lon = b.get("measure"), b.get("place"), b.get("lat"), b.get("lon")
+    if m and m not in df.columns:
+        m = None
+    if place and place not in df.columns:
+        place = None
+    agg = _agg_for(m) if m else "count"
+    val = pd.to_numeric(df[m], errors="coerce") if m else pd.Series(1.0, index=df.index)
+    grp = val.groupby
+
+    def total(keys):
+        g = grp(keys, dropna=True)
+        return g.sum() if agg in ("sum", "count") else g.mean()
+    rows: list[dict] = []
+    mode = "places"
+    if lat and lon and lat in df.columns and lon in df.columns:
+        la = pd.to_numeric(df[lat], errors="coerce").round(4).rename("__lat")
+        lo = pd.to_numeric(df[lon], errors="coerce").round(4).rename("__lon")
+        keys = [la, lo] + ([df[place].astype(str).rename("__place")] if place else [])
+        g = total(keys).sort_values(ascending=False).head(3000)
+        for k, v in g.items():
+            rows.append({"place": (k[2] if place else None), "lat": _f(k[0], 5), "lon": _f(k[1], 5), "value": _f(v, 2)})
+        mode = "points"
+    elif place:
+        g = total(df[place].astype(str).where(df[place].notna())).sort_values(ascending=False).head(800)
+        rows = [{"place": str(k), "value": _f(v, 2)} for k, v in g.items()]
+    ent = spec.get("entities") or "rows"
+    mlab = _lab(m) if m else ent
+    where = _lab(place) if place else "location"
+    title = b.get("title") or (f"{_cap(mlab)} by {where}" if mode == "places" or not place else f"{_cap(mlab)} on the map")
+    sub = ("each dot is one location" if mode == "points" else f"each bubble is one {where}") + \
+          (f" · size = {'total' if agg == 'sum' else 'average'} {mlab}" if m else f" · size = {ent}")
+    return {"type": "map", "title": title, "sub": sub, "unit": _unit(m) if m else "count", "rows": rows, "mode": mode,
+            "place_label": where if place else None, "measure_label": mlab, "currency": spec.get("currency") or "USD", "h": b.get("h", 2)}
 
 
 def _id_label(col: str | None) -> str:
@@ -771,7 +905,7 @@ def _id_label(col: str | None) -> str:
     if not col:
         return "Row"
     base = re.sub(r"(num(ber)?|_?id|_?no|_?ref|_?key|_?code)$", "", str(col), flags=re.I).strip("_ ") or str(col)
-    return _cap(analysis.label_of(base))
+    return _cap(_lab(base))
 
 
 def _fmt(v, unit: str) -> str:
@@ -782,7 +916,8 @@ def _fmt(v, unit: str) -> str:
     if not math.isfinite(x):
         return "—"
     if unit == "money":
-        return f"${x:,.0f}" if abs(x) >= 100 else f"${x:,.2f}"
+        sym = SYMBOLS.get(getattr(_tl, "currency", "USD") or "USD", "$")
+        return f"{sym}{x:,.0f}" if abs(x) >= 100 else f"{sym}{x:,.2f}"
     if unit == "ratio":
         return f"{x:.2f}"
     if unit == "pct":
@@ -827,7 +962,8 @@ def _monthly(df: pd.DataFrame, spec: dict, col: str | None, agg: str, shift_year
     return [{"label": p.strftime("%b %y"), "value": _f(v, 2)} for p, v in g.items()]
 
 
-COST = re.compile(r"discount|cost|refund|return|churn|cancel|complaint|defect|delay|tax|fee|expense|cogs", re.I)
+COST = re.compile(r"discount|cost|refund|return|churn|cancel|complaint|defect|delay|tax|fee|expense|cogs|"
+                  r"delivery_min|delivery_time|wait|latency|duration|(^|_)min(s)?$|minutes|bounce|error|fail", re.I)
 
 
 def _period_chips(df: pd.DataFrame, spec: dict, col: str | None, agg: str) -> list[dict]:
@@ -861,7 +997,8 @@ def compute(db: Session, user: models.User, dash: models.Dashboard, page_id: str
     base, sampled = frame(db, user, src["source_id"], src.get("table"))
     page = next((p for p in spec.get("pages") or [] if p["id"] == page_id), None) or (spec.get("pages") or [{}])[0]
     df, applied = _apply_filters(base, spec, filters or spec.get("default_filters"))
-    out = {"id": dash.id, "name": dash.name, "page": {"id": page.get("id"), "name": page.get("name")}, "rows_in_view": int(len(df)),
+    _tl.currency = spec.get("currency") or "USD"
+    out = {"id": dash.id, "name": dash.name, "currency": spec.get("currency") or "USD", "page": {"id": page.get("id"), "name": page.get("name")}, "rows_in_view": int(len(df)),
            "rows_total": int(len(base)), "applied": applied, "refreshed_at": datetime.utcnow().isoformat() + "Z", "blocks": []}
     if page.get("kind") == "home":
         out["home"] = _home(df, spec, base)
@@ -904,7 +1041,7 @@ def _home(df: pd.DataFrame, spec: dict, base: pd.DataFrame) -> dict:
                 if b["kind"] == "g_measure" and b.get("agg") != "per_day" and len(kpis) < 4:
                     x = pd.to_numeric(df[b["column"]], errors="coerce")
                     agg = b.get("agg") or "sum"
-                    kpis.append({"label": analysis.label_of(b["column"]).capitalize(), "value": _f(x.sum() if agg == "sum" else x.mean(), 2),
+                    kpis.append({"label": _lab(b["column"]).capitalize(), "value": _f(x.sum() if agg == "sum" else x.mean(), 2),
                                  "unit": _unit(b["column"]), "note": "total" if agg == "sum" else "average"})
             if len(kpis) >= 4:
                 break
@@ -920,7 +1057,7 @@ EDIT = re.compile(
     r"\b(make|turn|switch|set|change|use|go)\b.{0,30}\b(dark|light|navy|forest|graphite|sand|ink|theme|brand colou?rs?|colou?rs?|accent)\b"
     r"|#[0-9a-f]{6}\b|\b(dark|light) (mode|theme)\b"
     r"|\b(rename|call|name|title)\s+(it|this|the dashboard|dashboard)\b"
-    r"|\badd\b.{0,50}\b(chart|graph|kpi|table|block|tile|breakdown|view)\b|\badd\s+\w+(\s+\w+)?\s+by\s+\w+"
+    r"|\badd\b.{0,50}\b(chart|graph|kpi|table|block|tile|breakdown|view|map)\b|\badd\s+\w+(\s+\w+)?\s+by\s+\w+"
     r"|\b(remove|delete|drop|hide)\b.{0,50}\b(chart|graph|kpi|table|block|tile|card|list|breakdown)\b|\b(remove|delete|drop|hide) the\b"
     r"|\b(filter|limit)\s+(it|this|the dashboard|dashboard)?\s*(to|by)\b|\b(show only|only show)\b|^\s*undo\b", re.I)
 
@@ -989,14 +1126,45 @@ def apply_edit(db: Session, user: models.User, dash: models.Dashboard, text: str
         want = rm.group(1).lower()
         for p in spec.get("pages") or []:
             for b in list(p.get("blocks") or []):
-                lab = " ".join(filter(None, [b.get("title"), analysis.label_of(b.get("column") or ""), b["kind"].replace("o_", "").replace("g_", "")])).lower()
+                lab = " ".join(filter(None, [b.get("title"), _lab(b.get("column") or ""), b["kind"].replace("o_", "").replace("g_", "")])).lower()
                 if want and (want in lab or all(w in lab for w in re.findall(r"[a-z]{4,}", want))):
                     p["blocks"].remove(b)
-                    changes.append(f"removed “{b.get('title') or analysis.label_of(b.get('column') or b['kind'])}” from {p['name']}")
+                    changes.append(f"removed “{b.get('title') or _lab(b.get('column') or b['kind'])}” from {p['name']}")
                     page_id = p["id"]
                     break
             if changes:
                 break
+    madd = re.search(r"\b(?:add|show|put)\b\s+(.*\bmaps?\b.*)$", t, re.I)
+    if madd and not changes and columns:
+        # R66: "add a live map of revenue by city" -> a live street map block
+        numeric_ = numeric or set()
+        want = re.sub(r"\b(?:an?|the)?\s*(?:live|street|geo|heat|bubble|real)?\s*maps?\b\s*(?:of|for|showing|with)?\s*", " ", madd.group(1), flags=re.I).strip()
+        want = re.sub(r"^(?:it|them|this)\s+(?:on\s+)?(?:a\s+)?", "", want, flags=re.I)
+        left, _, right = want.partition(" by ")
+        geo_ = dict(spec.get("geo") or {})
+        lat_ = geo_.get("lat") or next((c for c in columns if c in numeric_ and GEO_LAT.search(_snake(c).lower())), None)
+        lon_ = geo_.get("lon") or next((c for c in columns if c in numeric_ and GEO_LON.search(_snake(c).lower())), None)
+        places_ = geo_.get("places") or [c for c in columns if c not in numeric_ and PLACE.search(_snake(c).lower())]
+
+        def best_(text_: str, cands: list[str]) -> str | None:
+            sc = sorted(((analysis.word_score(text_, c), i, c) for i, c in enumerate(cands)), key=lambda x: (-x[0], x[1]))
+            return sc[0][2] if sc and sc[0][0] > 0 else None
+        place_ = (best_(right, places_) or best_(right, [c for c in columns if c not in numeric_])) if right else (places_[0] if places_ else None)
+        mcands = [c for c in columns if c in numeric_ and c not in (lat_, lon_)]
+        measure_ = best_(left or want, mcands) or next((b.get("column") for p in spec.get("pages") or [] for b in p.get("blocks") or []
+                                                         if b.get("kind") == "g_measure" and b.get("column") in mcands), None)
+        blk = _map_block({"geo": {"lat": lat_, "lon": lon_} if lat_ and lon_ else None, "places": [place_] if place_ else []},
+                         measure_, f"map{int(time.time() * 1000) % 10_000_000}", place_)
+        if blk is None:
+            raise ValueError("This table has no city, place or latitude/longitude column, so there is nothing to put on a map.")
+        target = next((p for p in spec.get("pages") or [] if p["id"] == "overview"), None) or \
+            next((p for p in spec.get("pages") or [] if p.get("kind") != "home"), None)
+        if target is not None:
+            target.setdefault("blocks", []).insert(0, blk)
+            what = f"a live map of {_lab(measure_) if measure_ else spec.get('entities') or 'rows'}" + \
+                (f" by {_lab(place_)}" if place_ and not (lat_ and lon_) else (" at each location" if lat_ and lon_ else ""))
+            changes.append(f"added {what} to {target['name']}")
+            page_id = target["id"]
     add = re.search(r"\badd\b\s+(?:a\s+|an\s+)?(?:chart|graph|block|breakdown|view|table)?\s*(?:of|for|showing|with)?\s*(.+)$", t, re.I)
     if add and not changes and columns:
         want = add.group(1)
@@ -1020,7 +1188,7 @@ def apply_edit(db: Session, user: models.User, dash: models.Dashboard, text: str
                 if not spec.get("outcome"):
                     blk["measure"] = measure or next((b.get("column") for p in spec["pages"] for b in p.get("blocks") or [] if b["kind"] == "g_measure"), None)
                 target.setdefault("blocks", []).insert(0, blk)
-                what = f"{analysis.label_of(blk['measure'])} by {analysis.label_of(col)}" if blk.get("measure") else analysis.label_of(col)
+                what = f"{_lab(blk['measure'])} by {_lab(col)}" if blk.get("measure") else _lab(col)
                 changes.append(f"added {what} to {target['name']}")
                 page_id = target["id"]
     fm = re.search(r"\b(?:filter|show only|only show|limit it)\s+(?:to|by)?\s*(.+)$", t, re.I)
@@ -1099,7 +1267,8 @@ def _rgb(hexs: str) -> tuple[int, int, int]:
 
 
 def _num_fmt(unit: str | None) -> str:
-    return {"money": '"$"#,##0', "pct": '0.0"%"', "pp": '+0.0" pp";-0.0" pp"', "ratio": "0.00", "count": "#,##0"}.get(unit or "", "#,##0.##")
+    sym = SYMBOLS.get(getattr(_tl, "currency", "USD") or "USD", "$").strip()
+    return {"money": f'"{sym}"#,##0', "pct": '0.0"%"', "pp": '+0.0" pp";-0.0" pp"', "ratio": "0.00", "count": "#,##0"}.get(unit or "", "#,##0.##")
 
 
 def workbook(db: Session, user: models.User, dash: models.Dashboard, filters: dict | None) -> bytes:
@@ -1176,6 +1345,24 @@ def workbook(db: Session, user: models.User, dash: models.Dashboard, filters: di
                     row += 1
                 if b.get("baseline"):
                     ws.cell(row=row, column=1, value=b["baseline"].get("label")).font = Font(italic=True, color="5B6472")
+                    row += 1
+                row += 1
+            elif t == "map":
+                # R66: the map's numbers as a table - place, latitude, longitude, value
+                heads = [h for h, k in (((b.get("place_label") or "Place").capitalize(), "place"), ("Latitude", "lat"), ("Longitude", "lon"),
+                                         ((b.get("measure_label") or "Value").capitalize(), "value"))
+                         if any(it.get(k) is not None for it in b.get("rows") or [])]
+                keys = [k for h, k in (("p", "place"), ("a", "lat"), ("o", "lon"), ("v", "value")) if any(it.get(k) is not None for it in b.get("rows") or [])]
+                for j, h in enumerate(heads, start=1):
+                    cell = ws.cell(row=row, column=j, value=h)
+                    cell.font = Font(bold=True, color="FFFFFF")
+                    cell.fill = head_fill
+                row += 1
+                for it in (b.get("rows") or [])[:3000]:
+                    for j, k in enumerate(keys, start=1):
+                        c = ws.cell(row=row, column=j, value=it.get(k))
+                        if k == "value":
+                            c.number_format = _num_fmt(b.get("unit"))
                     row += 1
                 row += 1
             elif t == "table":
