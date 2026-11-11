@@ -179,7 +179,13 @@ export default function LiveMapCanvas({ result, block, minHeight = 320, compact 
   const [built, setBuilt] = useState<Built | null>(null);
   const defaultMode: Mode = !plan ? "points" : plan.kind === "routes" ? "routes" : plan.kind === "points" ? ((result.rows?.length ?? 0) > 300 ? "heat" : plan.measure ? "bubbles" : "points") : "bubbles";
   const [mode, setMode] = useState<Mode>((block.config?.map_mode as Mode) || defaultMode);
-  const fmt = useMemo(() => (plan?.measure ? measureFormats(block, result)[plan.measure] ?? PLAIN_FORMAT : PLAIN_FORMAT), [plan, block, result]);
+  const fmt = useMemo(() => {
+    if (!plan?.measure) return PLAIN_FORMAT;
+    // a caller that knows the number's meaning (a designed dashboard: "currency" in INR) says so in config; it wins
+    const cfg = (block.config || {}) as Record<string, any>;
+    if (cfg.format === "currency" && typeof cfg.currency === "string") return { ...PLAIN_FORMAT, format: "currency" as const, currency: cfg.currency };
+    return measureFormats(block, result)[plan.measure] ?? PLAIN_FORMAT;
+  }, [plan, block, result]);
 
   useEffect(() => {
     let alive = true;
