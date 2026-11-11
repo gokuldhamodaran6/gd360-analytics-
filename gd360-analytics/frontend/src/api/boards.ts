@@ -23,7 +23,9 @@ export type BoardColumns = { dims: { column: string; label: string }[]; measures
 export type BoardVersion = { index: number; label: string; at?: string | null; current: boolean };
 export type Point = { label: string; value: number | null; n?: number };
 export type Block = {
-  id: string; kind: string; type: "kpi" | "bars" | "line" | "table" | "list" | "tiers" | "empty" | "note"; span: number; h: number; hero: boolean;
+  id: string; kind: string; type: "kpi" | "bars" | "line" | "table" | "list" | "tiers" | "empty" | "note" | "map"; span: number; h: number; hero: boolean;
+  // R66: a live street map (type "map"): rows of {place?, lat?, lon?, value}
+  mode?: "points" | "places"; place_label?: string | null; measure_label?: string; currency?: string;
   title?: string; sub?: string; note?: string; definition?: string; text?: string;
   value?: number | null; unit?: Unit; tone?: Tone; chips?: Chip[]; spark?: (number | null)[] | null;
   curve?: { label: string; points: Point[] } | null; stack?: { label: string; value: number; tone: Tone }[];
@@ -38,7 +40,7 @@ export type HomeData = {
 };
 export type PageRun = {
   id: string; name: string; page: { id: string; name: string }; rows_in_view: number; rows_total: number; applied: string[];
-  refreshed_at: string; blocks: Block[]; home?: HomeData; empty?: string;
+  refreshed_at: string; blocks: Block[]; home?: HomeData; empty?: string; currency?: string;
 };
 
 export const boardsApi = {
