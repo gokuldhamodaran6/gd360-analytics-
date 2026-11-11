@@ -7,6 +7,7 @@ import { FunnelChart, funnelModel } from "./FunnelChart";
 import { HeatmapChart } from "./HeatmapChart";
 import { ChartMessage } from "./kit";
 import { MapChart } from "./MapChart";
+import { LiveMap } from "./LiveMap";
 import { mapModel } from "./mapModel";
 import { matrixModel } from "./matrixModel";
 import type { SpecialChartType } from "./model";
@@ -51,6 +52,7 @@ export function SpecialChart({ type, result, block, crossColumn = null, selected
   const title = block.title;
   const common = { title, selectedValue, hasSelection, onExportApi, minHeight, compact };
   const built = useMemo(() => {
+    if (type === "live_map") return { kind: "live_map", model: true } as const;
     if (type === "map") return { kind: "map", model: mapModel(result, block, theme) } as const;
     if (type === "heatmap" || type === "pivot") return { kind: "matrix", model: matrixModel(result, block, theme) } as const;
     if (type === "scatter" || type === "bubble") return { kind: "scatter", model: scatterModel(result, block, theme, type === "bubble") } as const;
@@ -61,6 +63,8 @@ export function SpecialChart({ type, result, block, crossColumn = null, selected
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [type, result, block, theme.key]);
 
+  // 2026-11-11 (live maps): a real street map - points, bubbles, heat or routes (LiveMap.tsx)
+  if (built.kind === "live_map") return <LiveMap result={result} block={block} minHeight={minHeight} compact={compact} />;
   if (built.kind === "waterfall") {
     if (built.plan.kind === "message") return <ChartMessage kind="waterfall-needs" minHeight={minHeight}>{built.plan.text}</ChartMessage>;
     const m = built.plan.model;

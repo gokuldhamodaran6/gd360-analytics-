@@ -27,7 +27,7 @@ export const SCALE_RATIO = 8;
 
 export type ChartTypeKey =
   | "bar" | "horizontal_bar" | "line" | "area" | "stacked_bar" | "stacked_bar_100" | "stacked_area" | "stacked_area_100" | "combo"
-  | "donut" | "pie" | "treemap" | "map" | "heatmap" | "pivot" | "scatter" | "bubble" | "funnel" | "waterfall" | "histogram" | "bullet"
+  | "donut" | "pie" | "treemap" | "map" | "live_map" | "heatmap" | "pivot" | "scatter" | "bubble" | "funnel" | "waterfall" | "histogram" | "bullet"
   | "table" | "kpi";
 
 export type ChartTypeInfo = { type: ChartTypeKey; label: string; when: string; needs: string };
@@ -48,6 +48,7 @@ export const CHART_TYPES: ChartTypeInfo[] = [
   { type: "pie", label: "Pie", when: "share of a whole across 3-6 categories", needs: "needs one category and one measure" },
   { type: "treemap", label: "Treemap", when: "part-to-whole across many categories (one or two levels)", needs: "needs one or two categories and one measure" },
   { type: "map", label: "Map", when: "one measure by a country column with more than 6 countries", needs: "needs a country column" },
+  { type: "live_map", label: "Live map", when: "points, cities or routes on a real street map (latitude and longitude, a city column, or origin and destination)", needs: "needs latitude and longitude, or a city column" },
   { type: "heatmap", label: "Heatmap", when: "one measure by two dimensions (segment x month, weekday x month)", needs: "needs two dimensions" },
   { type: "pivot", label: "Pivot table", when: "several measures by a row dimension and a column dimension", needs: "needs two dimensions" },
   { type: "scatter", label: "Scatter", when: "the relationship between two measures, one point per category", needs: "needs two measures" },
@@ -62,7 +63,7 @@ export const CHART_TYPES: ChartTypeInfo[] = [
 const BY_TYPE = new Map(CHART_TYPES.map((t) => [t.type as string, t]));
 
 const ALIASES: Record<string, string> = {
-  column: "bar", grouped_bar: "bar", hbar: "horizontal_bar", barh: "horizontal_bar", choropleth: "map", geo: "map", matrix: "heatmap",
+  column: "bar", grouped_bar: "bar", hbar: "horizontal_bar", barh: "horizontal_bar", choropleth: "map", geo: "map", street_map: "live_map", point_map: "live_map", geo_map: "live_map", matrix: "heatmap",
   heat_map: "heatmap", pivot_table: "pivot", "100_stacked_bar": "stacked_bar_100", percent_stacked_bar: "stacked_bar_100",
   stacked_100: "stacked_bar_100", distribution: "histogram", progress: "bullet", bridge: "waterfall", step_line: "line", tree_map: "treemap",
 };
@@ -91,7 +92,7 @@ export function blockTypeFor(chartType: string): "chart" | "kpi" | "table" | "do
 
 // ---- shapes ----------------------------------------------------------------
 
-export type ShapeDim = { name: string; role: "category" | "ordinal" | "country"; distinct: number | null; countries?: number; few_countries?: number };
+export type ShapeDim = { name: string; role: "category" | "ordinal" | "country" | "place"; distinct: number | null; countries?: number; few_countries?: number };
 export type ShapeMeasure = { name: string; additive: boolean; unit: "number" | "percent" | "currency" };
 export type ChartShape = {
   time: { grain: string; periods: number | null } | null;
@@ -107,6 +108,20 @@ const ADDITIVE = new Set(["sum", "count", "count_distinct"]);
 const NUMERIC_TYPE_RE = /int|float|numeric|decimal|double|real|number|bigint|smallint/i;
 const DATE_TYPE_RE = /date|time/i;
 const ORDINAL_NAME_RE = /(^|[_\s])(year|yr|month|week|weekday|day|quarter|hour|bucket|band|tier|bin|range|age)([_\s]|$)/i;
+
+// 2026-11-11 (live maps): columns that name a place a street map can draw, and coordinates (backend
+// chart_recommender: the same lists).
+const PLACE_NAME_RE = /(^|[_\s])(city|cities|town|location|locality|place|address|pincode|pin_code|zip|zipcode|zip_code|postcode|postal_code|destination|origin|pickup|dropoff|drop|venue)([_\s]|$)/i;
+const LAT_NAME_RE = /(^|[_\s])(lat|latitude)([_\s]|$)/i;
+const LON_NAME_RE = /(^|[_\s])(lng|lon|long|longitude)([_\s]|$)/i;
+const snakeName = (s: string) => s.replace(/(?<=[a-z0-9])(?=[A-Z])/g, "_");
+export function looksLikePlaceName(column: string | null | undefined): boolean {
+  return Boolean(column) && PLACE_NAME_RE.test(snakeName(String(column)));
+}
+export function hasLatLon(shape: Pick<ChartShape, "dims" | "measures">): boolean {
+  const names = [...shape.dims.map((d) => d.name), ...shape.measures.map((m) => m.name)].map((n) => snakeName(n || ""));
+  return names.some((n) => LAT_NAME_RE.test(n)) && names.some((n) => LON_NAME_RE.test(n));
+}
 
 /** Does the column's NAME say it holds countries? (backend
  *  countries.looks_like_country_name) */
@@ -151,6 +166,10 @@ export function dimFromValues(name: string, values: unknown[], weights?: unknown
     out.role = "ordinal";
     return out;
   }
+  if (looksLikePlaceName(name) && !looksLikeCountryName(name)) {
+    out.role = "place";
+    return out;
+  }
   let score = countryColumnScore(present);
   if (weights && score < COUNTRY_SCORE_MIN) score = Math.max(score, countryWeightShare(values, weights));
   if (score >= COUNTRY_SCORE_MIN) {
@@ -178,6 +197,7 @@ export function dimFromSchema(name: string, colType: string | null | undefined, 
   let role: ShapeDim["role"] = "category";
   if (datePart || DATE_TYPE_RE.test(String(colType || "")) || NUMERIC_TYPE_RE.test(String(colType || "")) || ORDINAL_NAME_RE.test(name || "")) role = "ordinal";
   else if (looksLikeCountryName(name)) role = "country";
+  else if (looksLikePlaceName(name)) role = "place";
   return { name, role, distinct };
 }
 
@@ -266,6 +286,8 @@ export function fits(shape: ChartShape, chartType: string): Fit {
   if (shape.bins) return ct === "histogram" || ct === "table" ? YES : { ok: false, why: "a binned column is drawn as a histogram" };
   if (ct === "histogram") return no;
   if (ct === "table") return YES;
+  // 2026-11-11: latitude + longitude anywhere in the result, or one place / country column
+  if (ct === "live_map") return when(hasLatLon(shape) || (nd >= 1 && !t && (dims[0].role === "place" || dims[0].role === "country")));
   if (nm < 1) return { ok: false, why: "needs a measure" };
   if (ct === "kpi") return when(axes === 0);
   if (ct === "bullet") return when((axes === 0 && nm >= 1) || (axes === 1 && !t && nm === 1));
@@ -346,6 +368,7 @@ export function recommend(shape: ChartShape): Recommendation {
   const nd = dims.length, nm = measures.length;
 
   if (shape.bins) return rec("histogram", "Distribution of one numeric column → histogram", "strong");
+  if (hasLatLon(shape) && !t) return rec("live_map", "Latitude and longitude → live map", "strong");
   if (nm === 0) return rec("table", "No measure to draw → table", "strong");
 
   if (nd === 0 && !t) {
@@ -384,6 +407,7 @@ export function recommend(shape: ChartShape): Recommendation {
         return rec("map", "Country column → map", "strong");
       }
       if (d.few_countries !== undefined) return rec("bar", `Only ${n(d.few_countries)} countries → bars`);
+      if (d.role === "place" && (!known || (distinct as number) >= 3)) return rec("live_map", known ? `Place column with ${n(distinct as number)} values → live map` : "Place column → live map", "strong");
       if (known && (distinct as number) <= 1) return rec("bar", "A single value → one bar");
       if (d.role === "ordinal") {
         if (known && (distinct as number) > RANKING_MAX) return rec("line", `Ordered scale with ${n(distinct as number)} values → line`);

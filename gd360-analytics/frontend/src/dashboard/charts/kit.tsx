@@ -253,7 +253,7 @@ export function LegendRow({ items, y = 0 }: { items: LegendMark[]; y?: number })
   );
 }
 
-/** A colour as the browser resolves it ("rgb(15, 92, 70)") - for a fill
+/** A colour as the browser resolves it ("rgb(36, 76, 235)") - for a fill
  *  given as a CSS variable (the token theme), so the text set on it can be
  *  chosen by its luminance. Returns the input where it cannot be resolved
  *  (no layout: tests, server render). */

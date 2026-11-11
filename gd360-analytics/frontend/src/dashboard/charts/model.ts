@@ -217,8 +217,8 @@ export type ChartModel = {
 };
 
 // The forms that are not drawn by the cartesian renderer.
-export type SpecialChartType = "map" | "heatmap" | "pivot" | "scatter" | "bubble" | "treemap" | "funnel" | "waterfall" | "bullet";
-const SPECIAL = new Set<string>(["map", "heatmap", "pivot", "scatter", "bubble", "treemap", "funnel", "waterfall", "bullet"]);
+export type SpecialChartType = "map" | "live_map" | "heatmap" | "pivot" | "scatter" | "bubble" | "treemap" | "funnel" | "waterfall" | "bullet";
+const SPECIAL = new Set<string>(["map", "live_map", "heatmap", "pivot", "scatter", "bubble", "treemap", "funnel", "waterfall", "bullet"]);
 
 export type ChartPlan =
   | { kind: "chart"; model: ChartModel; arrangement: ChartArrangement }

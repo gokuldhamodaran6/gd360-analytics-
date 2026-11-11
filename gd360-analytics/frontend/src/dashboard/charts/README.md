@@ -23,6 +23,7 @@ other on a shared case table). It takes the SHAPE of a result, never its topic:
 | a date and a category with up to 6 values | line, one per value | few series compare on one axis |
 | a date and a category with more than 6 values | heatmap | too many lines to tell apart |
 | a country column, more than 6 countries, 80%+ of values resolve | map (with its ranked list) | geography is the question |
+| latitude + longitude columns, or a place column (city, town, location ...) with 3+ values | live map | points on a street map |
 | one category, 3-6 values, an additive measure, no negatives | donut | share of a whole |
 | one category, 7-30 values | horizontal bars | a ranking; long names fit |
 | one category, 31-200 values | horizontal bars of the largest | the tail folds |
@@ -62,6 +63,7 @@ block type. "Dimensions" are group-by columns, date parts or a time bucket;
 | `donut`, `pie` | share of a whole across 3-6 categories | one category, one additive measure | centre total; slices past 6 fold into "Other" |
 | `treemap` | part-to-whole across many categories (one or two levels) | one or two categories, one additive measure | at most 24 tiles a level, the rest fold into "Other"; labels only where they fit |
 | `map` | one measure by a country column with more than 6 countries | one country column (names, ISO-2 or ISO-3 codes), one measure | 5-7 colour classes; equal steps, or quantiles when one class would hold most countries (the legend says which); diverging around zero when values straddle it; countries with no data are a neutral fill; small territories are dots; a ranked list beside the map; "Zoom to data" / "World"; values that match no country are counted under the map |
+| `live_map` | points, cities or routes on a real street map you can pan and zoom (2026-11-11) | latitude + longitude columns (one point per row; two pairs, e.g. pickup / drop, are routes), or one place column (city, town, location, address, pincode - looked up by `POST /geo/resolve`, an offline GeoNames index), or two place columns that read as start and end | Bubbles / Heat / Points / Routes; Euliv's own Midnight / Daylight basemap from OpenFreeMap vector tiles (free, no key); size = the first measure; places that cannot be found are counted, never dropped silently; the map library loads only when a map is on screen |
 | `heatmap` | one measure by two dimensions (segment x month, weekday x month) | two dimensions (a date bucket or date part counts), one measure | value labels when every cell has room; `Totals` toggle (additive measures); ordered axes keep their order, named ones sort by total |
 | `pivot` | several measures by a row dimension and a column dimension | two dimensions, 1+ measures | `Shade` (first measure) and `Totals` toggles; CSV is the export |
 | `scatter` | the relationship between two measures, one point per category | one category, two measures (y = first, x = second) | least-squares trend line with r-squared when there are 6+ points (`config.trend: false` hides it); labels only on outliers, placed without overlap |
