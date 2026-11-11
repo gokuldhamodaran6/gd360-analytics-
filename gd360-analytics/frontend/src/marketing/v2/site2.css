@@ -1,8 +1,8 @@
 /* 2026-10-19 (R56, website boards: Landing, Pricing, Onboarding): the public site in brand v2 - Paper ground, Ink
    text, Signal green for the one main action, Geist and Geist Mono. One light look on purpose: the site is the same
    for every visitor, whatever their app theme. */
-.mk2 { --ink: #121514; --ink2: #4A504E; --ink3: #6E7472; --paper: #FAFAF9; --panel: #F3F4F3; --line: #E7E8E6; --line2: #D6D9D6; --brand: #0B6E4F;
-  --brand2: #0E8A63; --tint: #E8F3EE; --blue: #2F6FE4; --violet: #6246C4; --amber: #A35A0A; --red: #C2362C;
+.mk2 { --ink: #121514; --ink2: #4A504E; --ink3: #6E7472; --paper: #FAFAF9; --panel: #F3F4F3; --line: #E7E8E6; --line2: #D6D9D6; --brand: #244CEB;
+  --brand2: #2D5BFF; --tint: #EBF0FF; --blue: #2F6FE4; --violet: #6246C4; --amber: #A35A0A; --red: #C2362C;
   background: var(--paper); color: var(--ink); font-family: Geist, "Helvetica Neue", Arial, sans-serif; min-height: 100vh; color-scheme: light; -webkit-font-smoothing: antialiased; }
 .mk2 a { color: inherit; text-decoration: none; }
 .mk2 .mono { font-family: "Geist Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
@@ -16,7 +16,7 @@
 .mk2-sp { flex: 1; }
 .mk2-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 38px; padding: 0 18px; border-radius: 19px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; border: 1px solid transparent; white-space: nowrap; }
 .mk2-btn.pri { background: var(--brand); color: #fff; }
-.mk2-btn.pri:hover { background: #0A5E44; }
+.mk2-btn.pri:hover { background: #1F47E6; }
 .mk2-btn.sec { background: #fff; border-color: var(--line2); color: var(--ink); font-weight: 500; }
 .mk2-btn.sec:hover { border-color: var(--ink3); }
 .mk2-btn.lg { height: 46px; padding: 0 24px; border-radius: 23px; font-size: 15px; }
@@ -49,7 +49,7 @@
 .mk2-card .n { font-family: "Geist Mono", monospace; font-size: 12px; color: var(--brand); }
 .mk2-card h3 { font-size: 16px; font-weight: 600; margin: 4px 0 0; letter-spacing: -.01em; }
 .mk2-card p { font-size: 14px; line-height: 1.55; color: var(--ink2); margin: 0; }
-.mk2-card.tint { background: var(--tint); border-color: #BEDED0; }
+.mk2-card.tint { background: var(--tint); border-color: #C8D4FC; }
 .mk2-card .tag { align-self: flex-start; font-size: 12px; color: var(--ink2); border: 1px solid var(--line); border-radius: 12px; padding: 2px 9px; }
 .mk2-card .go { margin-top: auto; padding-top: 8px; color: var(--brand); font-weight: 500; font-size: 14px; text-decoration: underline; text-underline-offset: 4px; }
 .mk2-proof { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 32px; align-items: center; background: #fff; border: 1px solid var(--line); border-radius: 18px; padding: 36px; margin-top: 30px; }
