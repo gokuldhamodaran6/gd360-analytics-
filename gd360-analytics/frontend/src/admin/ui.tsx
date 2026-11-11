@@ -102,7 +102,7 @@ export function Kpi({ label, value, sub, delta, to, tone, spark, estimate }: { l
       <span className="mc-lbl">{label}{estimate ? " · est." : ""}</span>
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 10 }}>
         <span className="mc-kpi-v mc-num" style={{ color: tone === "warn" ? "var(--amber)" : undefined }}>{value}</span>
-        {spark && spark.length > 1 && <Spark values={spark} color={tone === "warn" ? "#F2B84B" : "#43E5A0"} />}
+        {spark && spark.length > 1 && <Spark values={spark} color={tone === "warn" ? "#F2B84B" : "#3D66FF"} />}
       </div>
       {(sub || delta != null) && (
         <span className="mc-sub" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -161,14 +161,14 @@ export function Bar({ pct, color }: { pct: number; color?: string }) {
 }
 
 /* ---------------------------------------------------------------- charts */
-export function Spark({ values, color = "#43E5A0", w = 104, h = 32 }: { values: number[]; color?: string; w?: number; h?: number }) {
+export function Spark({ values, color = "#3D66FF", w = 104, h = 32 }: { values: number[]; color?: string; w?: number; h?: number }) {
   const min = Math.min(...values), max = Math.max(...values), span = max - min || 1;
   const pts = values.map((v, i) => `${(i * (w - 4)) / (values.length - 1) + 2},${(h - 3 - ((v - min) / span) * (h - 6)).toFixed(1)}`).join(" ");
   return <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden="true"><polyline points={pts} fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" /></svg>;
 }
 
 /** Line/area chart over a series of {label, value} with hover read-out. */
-export function LineChart({ points, color = "#43E5A0", height = 200, fmt = (v: number) => fmtN(v), label }: { points: { label: string; value: number }[]; color?: string; height?: number; fmt?: (v: number) => string; label: string }) {
+export function LineChart({ points, color = "#3D66FF", height = 200, fmt = (v: number) => fmtN(v), label }: { points: { label: string; value: number }[]; color?: string; height?: number; fmt?: (v: number) => string; label: string }) {
   const [hover, setHover] = useState<number | null>(null);
   const W = 640, H = height, L = 44, R = 10, T = 14, B = 26;
   const max = Math.max(1, ...points.map((p) => p.value)) * 1.1;
@@ -189,19 +189,19 @@ export function LineChart({ points, color = "#43E5A0", height = 200, fmt = (v: n
         }}>
         {ticks.map((t) => (
           <g key={t}>
-            <line x1={L} x2={W - R} y1={y(t)} y2={y(t)} stroke="#141A1B" />
-            <text x={L - 8} y={y(t) + 4} fill="#7F8C88" fontSize={10.5} textAnchor="end" fontFamily="Geist Mono, monospace">{fmt(t)}</text>
+            <line x1={L} x2={W - R} y1={y(t)} y2={y(t)} stroke="#141418" />
+            <text x={L - 8} y={y(t) + 4} fill="#8E909A" fontSize={10.5} textAnchor="end" fontFamily="Geist Mono, monospace">{fmt(t)}</text>
           </g>
         ))}
         {points.length > 1 && <polygon points={`${L},${H - B} ${line} ${x(points.length - 1)},${H - B}`} fill={color} opacity={0.1} />}
         <polyline points={line} fill="none" stroke={color} strokeWidth={2.2} strokeLinejoin="round" strokeLinecap="round" />
         {points.map((p, i) => (i % step === 0 || i === points.length - 1) && (
-          <text key={i} x={x(i)} y={H - 6} fill="#7F8C88" fontSize={10.5} textAnchor="middle" fontFamily="Geist Mono, monospace">{p.label}</text>
+          <text key={i} x={x(i)} y={H - 6} fill="#8E909A" fontSize={10.5} textAnchor="middle" fontFamily="Geist Mono, monospace">{p.label}</text>
         ))}
         {hover != null && points[hover] && (
           <g>
-            <line x1={x(hover)} x2={x(hover)} y1={T} y2={H - B} stroke="#2A3436" />
-            <circle cx={x(hover)} cy={y(points[hover].value)} r={4.5} fill="#07090A" stroke={color} strokeWidth={2} />
+            <line x1={x(hover)} x2={x(hover)} y1={T} y2={H - B} stroke="#2A2B33" />
+            <circle cx={x(hover)} cy={y(points[hover].value)} r={4.5} fill="#0A0A0B" stroke={color} strokeWidth={2} />
           </g>
         )}
       </svg>
@@ -215,7 +215,7 @@ export function LineChart({ points, color = "#43E5A0", height = 200, fmt = (v: n
 }
 
 /** Vertical bars with value labels. */
-export function Bars({ items, height = 160, color = "#43E5A0", fmt = (v: number) => fmtN(v) }: { items: { label: string; value: number; color?: string; title?: string }[]; height?: number; color?: string; fmt?: (v: number) => string }) {
+export function Bars({ items, height = 160, color = "#3D66FF", fmt = (v: number) => fmtN(v) }: { items: { label: string; value: number; color?: string; title?: string }[]; height?: number; color?: string; fmt?: (v: number) => string }) {
   const max = Math.max(1, ...items.map((i) => i.value));
   return (
     <div>
