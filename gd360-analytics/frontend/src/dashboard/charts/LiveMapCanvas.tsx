@@ -167,10 +167,12 @@ function addLayers(map: MLMap, built: Built, mode: Mode) {
 
 const MODE_LAYERS: Record<Mode, string[]> = { bubbles: ["eu-bubbles"], heat: ["eu-heat"], points: ["eu-dots"], routes: ["eu-routes", "eu-dots"] };
 
-export default function LiveMapCanvas({ result, block, minHeight = 320, compact = false }: {
-  result: BlockResult; block: Pick<DashboardBlock, "id" | "title" | "config">; minHeight?: number; compact?: boolean;
+export default function LiveMapCanvas({ result, block, minHeight = 320, compact = false, theme: forced }: {
+  result: BlockResult; block: Pick<DashboardBlock, "id" | "title" | "config">; minHeight?: number; compact?: boolean; theme?: "light" | "dark";
 }) {
-  const theme = useThemeMode() === "light" ? "light" : "dark";
+  // a designed dashboard (board) has its own light or dark theme, which wins over the app's
+  const appTheme = useThemeMode() === "light" ? "light" : "dark";
+  const theme = forced ?? appTheme;
   const plan = useMemo(() => geoPlan(result), [result]);
   const box = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MLMap | null>(null);

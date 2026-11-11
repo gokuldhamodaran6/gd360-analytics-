@@ -5,7 +5,7 @@ import type { BlockResult, DashboardBlock } from "../../api/client";
 
 const LiveMapCanvas = lazy(() => import("./LiveMapCanvas"));
 
-export function LiveMap(props: { result: BlockResult; block: Pick<DashboardBlock, "id" | "title" | "config">; minHeight?: number; compact?: boolean }) {
+export function LiveMap(props: { result: BlockResult; block: Pick<DashboardBlock, "id" | "title" | "config">; minHeight?: number; compact?: boolean; theme?: "light" | "dark" }) {
   const h = props.minHeight ?? 320;
   return (
     <Suspense fallback={<div className="eu-map eu-map-loading" style={{ minHeight: h }}><span>Loading the map…</span></div>}>
