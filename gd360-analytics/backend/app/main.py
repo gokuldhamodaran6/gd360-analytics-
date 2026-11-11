@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
 from .database import init_db
 from .routers import (
+    geo as geo_router,
     auth, datasources, chat, dashboards, dashboard_builder, dashboard_comments, admin, conversations, goku,
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
     data_access_rules, ml_models, metric_definitions, transforms, pipelines, projects, apps, automations, ml_studio,
@@ -218,6 +219,8 @@ async def company_domain_cors(request: Request, call_next):
 
 app.include_router(flows.router)
 app.include_router(auth.router)
+# 2026-11-11 (live maps): place names -> coordinates for the live map (services/geo.py)
+app.include_router(geo_router.router)
 app.include_router(datasources.router)
 app.include_router(chat.router)
 app.include_router(dashboards.router)
