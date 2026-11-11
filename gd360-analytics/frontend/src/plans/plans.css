@@ -16,8 +16,8 @@
   font-family: Geist, "Helvetica Neue", system-ui, sans-serif;
 }
 .pl.pl-dark {
-  --pl-ink: #E8EEEC; --pl-ink2: #A3B0AC; --pl-ink3: #7F8C88; --pl-line: #1F2729; --pl-card: #0B0F10; --pl-panel: #0E1213;
-  --pl-accent: #43E5A0; --pl-accent-ink: #04140D; --pl-tint: #0E1A16; --pl-warn: #F2B84B; --pl-bad: #FF7A6B;
+  --pl-ink: #EDEDEF; --pl-ink2: #A1A3AD; --pl-ink3: #8E909A; --pl-line: #1E1F24; --pl-card: #0C0C0E; --pl-panel: #0F0F11;
+  --pl-accent: #3D66FF; --pl-accent-ink: #FFFFFF; --pl-tint: #0E1A16; --pl-warn: #F2B84B; --pl-bad: #FF7A6B;
   color-scheme: dark;
 }
 .pl-eb { font-family: "Geist Mono", ui-monospace, monospace; font-size: 11.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--pl-ink3); }
