@@ -284,6 +284,7 @@ def _dashboard_out(db: Session, dash: models.Dashboard, user: models.User,
         can_edit=_can_edit(db, dash, user),
         can_delete=_can_delete(db, dash, user),
         layout_version=dash.layout_version or 1,
+        thumbnail=getattr(dash, "thumbnail", None),
         **_source_ref(conv, user, db),
         **(extras or {}),
     )

@@ -61,7 +61,37 @@ from ..database import get_db
 from ..deps import get_current_user
 from ..services import notifications as notify
 from ..services.audit import log_audit_event
-from .dashboard_builder import _get_dashboard_v2
+from .dashboard_builder import _get_dashboard_v2 as _get_v2_only
+from types import SimpleNamespace
+
+
+def _get_dashboard_v2(db, user, dashboard_id, require_edit: bool = False):
+    """2026-11-11 (R67): comments hang on designed dashboards (layout_version 4) as well as classic ones."""
+    d = db.query(models.Dashboard).filter(models.Dashboard.id == dashboard_id).first()
+    if d is not None and (d.layout_version or 0) == 4:
+        from .dashboards import _can_edit as _ce, _can_view as _cv
+        if not _cv(db, d, user):
+            raise HTTPException(404, "Dashboard not found.")
+        if require_edit and not _ce(db, d, user):
+            raise HTTPException(403, "You have view-only access to this dashboard.")
+        return d
+    return _get_v2_only(db, user, dashboard_id, require_edit=require_edit)
+
+
+def _board_pages(d):
+    """A designed dashboard's pages and blocks as the comment code reads them (ids, titles, a type)."""
+    out = []
+    for p in (d.board_spec or {}).get("pages") or []:
+        if p.get("kind") == "home":
+            continue
+        blocks = [SimpleNamespace(id=b.get("id"), title=b.get("title") or None, type=str(b.get("kind") or "chart"), config={})
+                  for b in p.get("blocks") or []]
+        out.append(SimpleNamespace(id=p.get("id"), blocks=blocks))
+    return out
+
+
+def _pages_of(d):
+    return _board_pages(d) if (d.layout_version or 0) == 4 else list(d.pages)
 from .dashboards import _can_edit
 
 log = logging.getLogger(__name__)
@@ -217,7 +247,7 @@ def _can_act(db: Session, d: models.Dashboard, user: models.User, c: models.Dash
 
 
 def _blocks(d: models.Dashboard) -> dict[str, models.DashboardBlock]:
-    return {b.id: b for p in d.pages for b in p.blocks}
+    return {b.id: b for p in _pages_of(d) for b in p.blocks}
 
 
 def _anchor_label(anchor: dict | None) -> str | None:
@@ -530,8 +560,8 @@ def create_comment(
     body = payload.body.strip()
     if not body:
         raise HTTPException(400, "Write something first.")
-    page_ids = {p.id for p in d.pages}
-    block_pages = {b.id: p.id for p in d.pages for b in p.blocks}
+    page_ids = {p.id for p in _pages_of(d)}
+    block_pages = {b.id: p.id for p in _pages_of(d) for b in p.blocks}
     block_id, page_id, anchor = payload.block_id, payload.page_id, payload.anchor
     root: models.DashboardComment | None = None
     if payload.parent_id:

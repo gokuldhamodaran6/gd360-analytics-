@@ -236,7 +236,20 @@ def _filters_arg(filters: str | None) -> dict | None:
 def get_board(board_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     from .dashboards import _can_edit
     d = _board(db, board_id, user)
-    return board.summary(d) | {"can_edit": _can_edit(db, d, user), "access": board_edit.access(db, d)}
+    return board.summary(d) | {"can_edit": _can_edit(db, d, user), "access": board_edit.access(db, d), "source_info": _source_info(db, d),
+                               "link": bool(d.share and d.share.published_at)}
+
+
+def _source_info(db: Session, d: models.Dashboard) -> dict | None:
+    """R67: which data the dashboard reads - name, kind (CSV file, BigQuery ...), table, rows and when it last synced."""
+    src = (d.board_spec or {}).get("source") or {}
+    ds = db.get(models.DataSource, src.get("source_id")) if src.get("source_id") else None
+    if ds is None:
+        return {"name": src.get("name"), "table": src.get("table"), "kind": None, "id": src.get("source_id")} if src else None
+    kind = getattr(ds, "kind", None) or getattr(ds, "source_type", None) or getattr(ds, "type", None)
+    synced = getattr(ds, "last_synced_at", None) or getattr(ds, "updated_at", None) or getattr(ds, "created_at", None)
+    return {"id": ds.id, "name": ds.name, "kind": kind, "table": src.get("table"), "rows": (d.board_spec or {}).get("rows_at_build"),
+            "synced_at": synced.isoformat() + "Z" if synced else None}
 
 
 @router.post("/boards/{board_id}/run")
@@ -398,6 +411,248 @@ def board_publish(board_id: str, db: Session = Depends(get_db), user: models.Use
 def board_unpublish(board_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     d = _board(db, board_id, user, edit=True)
     return _board_edit(db, d, lambda: board_edit.publish(db, d, user, False))
+
+
+# ---- R67: Power BI-style editing, pages, brand colours, a real thumbnail, and sharing ----------------------------
+
+class BlockSet(BaseModel):
+    span: int | None = Field(default=None, ge=1, le=12)
+    h: int | None = Field(default=None, ge=1, le=4)
+    to_index: int | None = Field(default=None, ge=0, le=200)
+    style: str | None = Field(default=None, max_length=20)
+    color: str | None = Field(default=None, max_length=7)
+    clear_color: bool = False
+
+
+class PageIn(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+
+
+class BrandIn(BaseModel):
+    accent: str | None = Field(default=None, max_length=7)
+    mode: str | None = Field(default=None, pattern="^(light|dark)$")
+
+
+class ThumbIn(BaseModel):
+    image: str = Field(min_length=30, max_length=400_000)
+
+
+class ShareLinkIn(BaseModel):
+    mode: str = Field(pattern="^(public|private)$")
+    password: str | None = Field(default=None, max_length=200)
+
+
+class ShareEmailIn(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+
+
+class ShareDomainIn(BaseModel):
+    domain: str = Field(min_length=3, max_length=253)
+
+
+@router.post("/boards/{board_id}/blocks/{block_id}/set")
+def board_block_set(board_id: str, block_id: str, payload: BlockSet, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    return _board_edit(db, d, lambda: board_edit.set_block(db, d, block_id, span=payload.span, h=payload.h, to_index=payload.to_index,
+                                                           style=payload.style, color=payload.color, clear_color=payload.clear_color))
+
+
+@router.post("/boards/{board_id}/pages", status_code=201)
+def board_page_add(board_id: str, payload: PageIn, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    return _board_edit(db, d, lambda: board_edit.add_page(db, d, payload.name))
+
+
+@router.put("/boards/{board_id}/pages/{page_id}")
+def board_page_rename(board_id: str, page_id: str, payload: PageIn, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    return _board_edit(db, d, lambda: board_edit.rename_page(db, d, page_id, payload.name))
+
+
+@router.delete("/boards/{board_id}/pages/{page_id}")
+def board_page_delete(board_id: str, page_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    return _board_edit(db, d, lambda: board_edit.delete_page(db, d, page_id))
+
+
+@router.post("/boards/{board_id}/brand")
+def board_brand(board_id: str, payload: BrandIn, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    return _board_edit(db, d, lambda: board_edit.set_brand(db, d, accent=payload.accent, mode=payload.mode))
+
+
+@router.post("/dashboards/{dashboard_id}/thumbnail")
+def dashboard_thumbnail(dashboard_id: str, payload: ThumbIn, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """R67: the card on the Dashboards list shows the dashboard itself - a small JPEG the editor's browser drew."""
+    from .dashboards import _can_edit
+    d = db.get(models.Dashboard, dashboard_id)
+    if d is None or not _can_edit(db, d, user):
+        raise HTTPException(404, "Dashboard not found.")
+    if not payload.image.startswith(("data:image/jpeg;base64,", "data:image/webp;base64,", "data:image/png;base64,")):
+        raise HTTPException(400, "A thumbnail is an image.")
+    d.thumbnail = payload.image
+    db.commit()
+    return {"ok": True}
+
+
+def _share_state(db: Session, d: models.Dashboard) -> dict:
+    from ..services import policies
+    spec = d.board_spec or {}
+    sh = d.share
+    pol = policies.for_workspace_id(db, d.workspace_id) if d.workspace_id else {}
+    return {
+        "workspace": {"on": bool(d.workspace_id) and not spec.get("draft"), "available": bool(d.workspace_id),
+                      **{k: v for k, v in board_edit.access(db, d).items() if k in ("people",)}},
+        "link": {"published": bool(sh and sh.published_at), "mode": sh.mode if sh else None, "slug": sh.slug if sh else None,
+                 "password": bool(sh and sh.password_hash), "views": int((sh.view_count or 0) if sh else 0),
+                 "emails": [{"id": e.id, "email": e.email} for e in (sh.allowed_emails if sh else [])],
+                 "domain": sh.custom_domain if sh else None, "domain_status": sh.custom_domain_status if sh else None,
+                 "domain_error": sh.custom_domain_error if sh else None},
+        "public_allowed": not pol.get("block_public_links"),
+    }
+
+
+def _ensure_share(db: Session, d: models.Dashboard, mode: str) -> models.DashboardShare:
+    from .dashboard_builder import _make_unique_slug
+    sh = d.share
+    if sh is None:
+        sh = models.DashboardShare(dashboard_id=d.id, slug=_make_unique_slug(db, d.name), mode=mode)
+        db.add(sh)
+        db.flush()
+    return sh
+
+
+@router.get("/boards/{board_id}/share")
+def board_share_get(board_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    return _share_state(db, d)
+
+
+@router.post("/boards/{board_id}/share")
+def board_share_publish(board_id: str, payload: ShareLinkIn, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """A link outside the app: "public" = anyone with it, no sign-in; "private" = only the emails on its list
+    (each confirms their address; an optional password on top)."""
+    from ..services import audit, policies
+    from .. import security
+    d = _board(db, board_id, user, edit=True)
+    if payload.mode == "public" and d.workspace_id and policies.for_workspace_id(db, d.workspace_id).get("block_public_links"):
+        raise HTTPException(403, "This workspace doesn't allow \"anyone with the link\". Share it with named people instead.")
+    sh = _ensure_share(db, d, payload.mode)
+    sh.mode = payload.mode
+    pw = (payload.password or "").strip()
+    sh.password_hash = security.hash_password(pw) if payload.mode == "private" and pw else None
+    sh.published_at = datetime.utcnow()
+    audit.log_audit_event(db, actor=user, action="dashboard_published", workspace_id=d.workspace_id, target_type="dashboard",
+                          target_id=d.id, metadata={"name": d.name, "mode": payload.mode, "password": bool(sh.password_hash)})
+    db.commit()
+    db.refresh(d)
+    return _share_state(db, d)
+
+
+@router.delete("/boards/{board_id}/share")
+def board_share_off(board_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    if d.share:
+        d.share.published_at = None
+        db.commit()
+        db.refresh(d)
+    return _share_state(db, d)
+
+
+@router.post("/boards/{board_id}/share/emails", status_code=201)
+def board_share_email(board_id: str, payload: ShareEmailIn, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    import re as _re
+    d = _board(db, board_id, user, edit=True)
+    email = payload.email.strip().lower()
+    if not _re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise HTTPException(400, "That doesn't look like an email address.")
+    sh = _ensure_share(db, d, "private")
+    if any(e.email.lower() == email for e in sh.allowed_emails):
+        raise HTTPException(400, "That email already has access.")
+    db.add(models.DashboardShareEmail(share_id=sh.id, email=email))
+    db.commit()
+    db.refresh(d)
+    return _share_state(db, d)
+
+
+@router.delete("/boards/{board_id}/share/emails/{email_id}")
+def board_share_email_off(board_id: str, email_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    sh = d.share
+    row = db.query(models.DashboardShareEmail).filter(models.DashboardShareEmail.id == email_id,
+                                                      models.DashboardShareEmail.share_id == (sh.id if sh else "")).first()
+    if row is None:
+        raise HTTPException(404, "That person isn't on the list.")
+    db.delete(row)
+    db.commit()
+    db.refresh(d)
+    return _share_state(db, d)
+
+
+@router.post("/boards/{board_id}/share/domain")
+def board_share_domain(board_id: str, payload: ShareDomainIn, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """The company's own address for this dashboard (dashboards.acme.com) - the same white-label domains the
+    classic dashboards use (services/render_domains.py): the owner points a CNAME, Euliv issues the certificate."""
+    from ..services import render_domains
+    from .dashboard_builder import _normalize_domain
+    d = _board(db, board_id, user, edit=True)
+    sh = d.share
+    if sh is None or not sh.published_at:
+        raise HTTPException(400, "Publish a link first, then put it on your company's domain.")
+    domain = _normalize_domain(payload.domain)
+    if db.query(models.DashboardShare).filter(models.DashboardShare.custom_domain == domain, models.DashboardShare.id != sh.id).first():
+        raise HTTPException(400, f'"{domain}" is already used by another dashboard.')
+    if sh.render_custom_domain_id and sh.custom_domain != domain:
+        try:
+            render_domains.delete_custom_domain(sh.render_custom_domain_id)
+        except render_domains.RenderDomainError:
+            pass
+    try:
+        did, status = render_domains.create_custom_domain(domain)
+    except render_domains.RenderDomainsNotConfigured as e:
+        raise HTTPException(503, str(e))
+    except render_domains.RenderDomainError as e:
+        raise HTTPException(400, str(e))
+    sh.custom_domain, sh.render_custom_domain_id, sh.custom_domain_status, sh.custom_domain_error = domain, did, status, None
+    db.commit()
+    db.refresh(d)
+    return _share_state(db, d)
+
+
+@router.post("/boards/{board_id}/share/domain/recheck")
+def board_share_domain_recheck(board_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    from ..services import render_domains
+    d = _board(db, board_id, user, edit=True)
+    sh = d.share
+    if sh is None or not sh.render_custom_domain_id:
+        raise HTTPException(400, "No company domain is set up yet.")
+    try:
+        sh.custom_domain_status = render_domains.get_custom_domain_status(sh.render_custom_domain_id)
+        sh.custom_domain_error = None
+    except render_domains.RenderDomainsNotConfigured as e:
+        raise HTTPException(503, str(e))
+    except render_domains.RenderDomainError as e:
+        sh.custom_domain_error = str(e)
+    db.commit()
+    db.refresh(d)
+    return _share_state(db, d)
+
+
+@router.delete("/boards/{board_id}/share/domain")
+def board_share_domain_off(board_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    from ..services import render_domains
+    d = _board(db, board_id, user, edit=True)
+    sh = d.share
+    if sh is not None and sh.custom_domain:
+        if sh.render_custom_domain_id:
+            try:
+                render_domains.delete_custom_domain(sh.render_custom_domain_id)
+            except (render_domains.RenderDomainsNotConfigured, render_domains.RenderDomainError):
+                pass
+        sh.custom_domain = sh.render_custom_domain_id = sh.custom_domain_status = sh.custom_domain_error = None
+        db.commit()
+        db.refresh(d)
+    return _share_state(db, d)
 
 
 # ---- R61: the Bin - delete moves an item here; restore it within 7 days, then it is deleted for good ----------

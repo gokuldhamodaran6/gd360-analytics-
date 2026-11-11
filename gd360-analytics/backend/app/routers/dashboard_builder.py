@@ -9281,6 +9281,16 @@ def _render_public_dashboard(
     d = db.query(models.Dashboard).filter(models.Dashboard.id == share.dashboard_id).first()
     if not d:
         raise HTTPException(404, "This dashboard isn't available.")
+    # 2026-11-11 (R67): a designed dashboard (board) published as a link - the viewer draws it with the same
+    # BoardView the owner sees, computing each page through /board/run below (never the source's credentials)
+    if (d.layout_version or 0) == 4:
+        from ..services.agent import board as board_svc
+        summ = board_svc.summary(d)
+        for k in ("conversation_id", "changed", "can_undo", "versions", "edited_at", "draft", "model"):
+            summ.pop(k, None)
+        src = summ.get("source") or {}
+        summ["source"] = {"name": src.get("name")}
+        return schemas.PublicDashboardOut(name=d.name, pages=[], board=summ)
     # 2026-10-07 (identity-colour round): the same colours the owner sees.
     # Stored results are registered here too (canonical - see
     # _assign_stored_colors), then the resolved appearance goes out.
@@ -9495,6 +9505,42 @@ def preview_filtered_blocks_public(
         return _public_filtered_out(_filter_page_blocks_warehouse(db, d, page, ds, payload, d.owner_id, anonymous=True))
     out = _filter_page_blocks(db, page, df=None, ds=None, payload=payload)
     return _public_filtered_out(_with_file_colors(db, d, page, out, payload, anonymous=True))
+
+
+def _public_board_run(db: Session, share: models.DashboardShare, payload: dict, token: str | None) -> dict:
+    """R67: one page of a published designed dashboard, computed as its owner would see it."""
+    from ..services.agent import analysis as board_analysis, board as board_svc
+    _authorize_public_share(share, token)
+    d = db.query(models.Dashboard).filter(models.Dashboard.id == share.dashboard_id).first()
+    if not d or (d.layout_version or 0) != 4:
+        raise HTTPException(404, "This dashboard isn't available.")
+    owner = db.get(models.User, d.owner_id)
+    page_id = str((payload or {}).get("page_id") or "") or None
+    filters = (payload or {}).get("filters") if isinstance((payload or {}).get("filters"), dict) else None
+    try:
+        out = board_svc.compute(db, owner, d, page_id, filters)
+    except board_analysis.AnalysisError:
+        raise HTTPException(400, "This page couldn't be computed right now.")
+    out.pop("id", None)
+    return out
+
+
+@public_router.post("/{slug}/board/run")
+def run_board_public(slug: str, payload: dict, request: Request, db: Session = Depends(get_db),
+                     x_dashboard_access_token: str | None = Header(default=None, alias="X-Dashboard-Access-Token")):
+    ip = _client_ip(request)
+    _check_rate_limit(f"public-run:ip:{ip}", limit=_PUBLIC_RUN_RATE_LIMIT)
+    _check_rate_limit(f"public-run:slug:{slug}", limit=_PUBLIC_RUN_RATE_LIMIT)
+    return _public_board_run(db, _resolve_share_by_slug(db, slug), payload, x_dashboard_access_token)
+
+
+@public_domains_router.post("/{hostname}/board/run")
+def run_board_public_by_domain(hostname: str, payload: dict, request: Request, db: Session = Depends(get_db),
+                               x_dashboard_access_token: str | None = Header(default=None, alias="X-Dashboard-Access-Token")):
+    ip = _client_ip(request)
+    _check_rate_limit(f"public-run:ip:{ip}", limit=_PUBLIC_RUN_RATE_LIMIT)
+    _check_rate_limit(f"public-run:host:{hostname}", limit=_PUBLIC_RUN_RATE_LIMIT)
+    return _public_board_run(db, _resolve_share_by_domain(db, hostname), payload, x_dashboard_access_token)
 
 
 @public_router.post("/{slug}/pages/{page_id}/run", response_model=schemas.RunPageOut)
