@@ -329,7 +329,8 @@ HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 def set_block(db: Session, dash: models.Dashboard, block_id: str, *, span: int | None = None, h: int | None = None,
-              to_index: int | None = None, style: str | None = None, color: str | None = None, clear_color: bool = False) -> dict:
+              to_index: int | None = None, style: str | None = None, color: str | None = None, clear_color: bool = False,
+              labels: bool | None = None) -> dict:
     """One call for everything the editor's mouse does: a new width (1-12 columns) and height (1-3 rows) from a
     resize handle, a new position from a drag, a chart style and a colour from the block's bar."""
     spec = copy.deepcopy(dash.board_spec or {})
@@ -359,6 +360,9 @@ def set_block(db: Session, dash: models.Dashboard, block_id: str, *, span: int |
             raise EditError("That chart style isn't available for this block.")
         b["style"] = style
         bits.append(f"drew “{name}” as {style}")
+    if labels is not None:
+        b["labels"] = bool(labels)
+        bits.append(f"{'showed' if labels else 'hid'} the data labels on “{name}”")
     if clear_color:
         b.pop("color", None)
         bits.append(f"reset the colour of “{name}”")

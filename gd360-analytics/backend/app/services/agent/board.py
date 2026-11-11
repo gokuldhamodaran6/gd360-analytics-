@@ -600,6 +600,8 @@ def _block(df: pd.DataFrame, spec: dict, b: dict, base: pd.DataFrame) -> dict:
         out["style"] = b["style"]
     if b.get("color"):
         out["color"] = b["color"]
+    if b.get("labels") is False:
+        out["labels"] = False
     if b.get("title"):
         out["title"] = b["title"]
     if kind == "note":
