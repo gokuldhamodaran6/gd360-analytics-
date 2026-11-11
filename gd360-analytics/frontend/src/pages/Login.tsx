@@ -3,6 +3,8 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
 import ThemeToggle from "../components/ThemeToggle";
 import MfaStep from "../components/MfaStep";
+import AuthArt from "../components/AuthArt";
+import { EulivLogo } from "../components/Brand";
 
 // Small, dependency-free eye / eye-off icons for the "show password" toggle
 // below - so someone checking what they actually typed doesn't need to
@@ -62,18 +64,21 @@ export default function Login() {
     }
   };
 
+  // 2026-11-11 (Midnight & Cobalt): the sign-in page from the "Euliv dark redesign" canvas - the form on the left,
+  // a cobalt sky with an example answer and its proof trail on the right (components/AuthArt.tsx).
   return (
-    <div className="min-h-screen flex items-center justify-center px-4 relative">
-      <div className="absolute top-4 right-4">
-        <ThemeToggle />
-      </div>
-      <div className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-extrabold gradient-text">Euliv Analytics</h1>
-          <p className="text-muted mt-2">AI-driven, no-code 360&deg; data analytics.</p>
+    <div className="eu-auth">
+      <main className="eu-auth-main">
+        <div className="absolute top-2 right-2">
+          <ThemeToggle />
         </div>
-        {mfaToken ? (
-          <div className="card p-8">
+        <div className="eu-auth-form">
+          <Link to="/" aria-label="Euliv home"><EulivLogo size={26} /></Link>
+          <div>
+            <h1>{mfaToken ? "One more step" : "Your data analyst is ready"}</h1>
+            <p className="eu-sub">{mfaToken ? "Enter the code from your authenticator app." : "Sign in to your workspace."}</p>
+          </div>
+          {mfaToken ? (
             <MfaStep
               email={email}
               onBack={() => { setMfaToken(null); setPassword(""); }}
@@ -82,60 +87,56 @@ export default function Login() {
                 navigate(from, { replace: true });
               }}
             />
-          </div>
-        ) : (
-        <form onSubmit={onSubmit} className="card p-8 space-y-4">
-          <h2 className="text-xl font-semibold mb-2">Welcome back</h2>
-          {error && <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
-          <div>
-            <label className="text-sm text-muted mb-1 block">Email</label>
-            <input className="input" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" />
-          </div>
-          <div>
-            <label className="text-sm text-muted mb-1 block">Password</label>
-            {/* paddingRight is set inline, not via a pr-* class - .input's
-                own padding shorthand in index.css is plain CSS defined after
-                @tailwind utilities in the source, so at equal specificity it
-                silently wins over a pr-* utility class in the compiled
-                stylesheet (the same cascade issue already fixed this way on
-                the "Your data sources" search field). An inline style always
-                wins regardless of cascade order, so this can't regress. */}
-            <div className="relative">
-              <input
-                className="input"
-                style={{ paddingRight: "2.75rem" }}
-                type={showPassword ? "text" : "password"}
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword((v) => !v)}
-                className="absolute right-1 top-0 h-full px-2.5 flex items-center text-muted hover:text-text transition"
-                aria-label={showPassword ? "Hide password" : "Show password"}
-                tabIndex={-1}
-              >
-                {showPassword ? <EyeOffIcon className="w-4 h-4" /> : <EyeIcon className="w-4 h-4" />}
-              </button>
+          ) : (
+          <form onSubmit={onSubmit} className="flex flex-col gap-4">
+            {error && <div role="alert" className="text-sm text-danger bg-danger-fill border border-danger-border rounded-lg px-3 py-2">{error}</div>}
+            <div>
+              <label htmlFor="login-email">Work email</label>
+              <input id="login-email" className="input" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" />
             </div>
-          </div>
-          <button className="btn-primary w-full" type="submit" disabled={busy}>
-            {busy ? "Signing in..." : "Sign in"}
-          </button>
-          <p className="text-sm text-muted text-center">
-            New here?{" "}
-            <Link to="/register" state={{ from }} className="text-primary hover:underline">
-              Create an account
-            </Link>
+            <div>
+              <label htmlFor="login-password">Password</label>
+              {/* paddingRight inline: .input's own padding shorthand wins over a pr-* utility (see index.css). */}
+              <div className="relative">
+                <input
+                  id="login-password"
+                  className="input"
+                  style={{ paddingRight: "2.75rem" }}
+                  type={showPassword ? "text" : "password"}
+                  autoComplete="current-password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  className="absolute right-1 top-0 h-full px-2.5 flex items-center text-muted hover:text-text transition"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  tabIndex={-1}
+                >
+                  {showPassword ? <EyeOffIcon className="w-4 h-4" /> : <EyeIcon className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+            <button className="btn-primary w-full" type="submit" disabled={busy}>
+              {busy ? "Signing in..." : "Sign in"}
+            </button>
+            <p className="text-sm text-muted text-center m-0">
+              New here?{" "}
+              <Link to="/register" state={{ from }} className="eu-link">
+                Create a workspace
+              </Link>
+            </p>
+          </form>
+          )}
+          <p className="eu-auth-fine m-0">
+            By continuing, you agree to our <Link to="/privacy" className="underline">Privacy Policy</Link>.
           </p>
-          <p className="text-xs text-muted text-center">
-            <Link to="/privacy" className="hover:text-text hover:underline">Privacy Policy</Link>
-          </p>
-        </form>
-        )}
-      </div>
+        </div>
+      </main>
+      <AuthArt />
     </div>
   );
 }
