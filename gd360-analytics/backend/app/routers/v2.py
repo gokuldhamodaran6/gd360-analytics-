@@ -422,6 +422,7 @@ class BlockSet(BaseModel):
     style: str | None = Field(default=None, max_length=20)
     color: str | None = Field(default=None, max_length=7)
     clear_color: bool = False
+    labels: bool | None = None
 
 
 class PageIn(BaseModel):
@@ -454,7 +455,8 @@ class ShareDomainIn(BaseModel):
 def board_block_set(board_id: str, block_id: str, payload: BlockSet, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     d = _board(db, board_id, user, edit=True)
     return _board_edit(db, d, lambda: board_edit.set_block(db, d, block_id, span=payload.span, h=payload.h, to_index=payload.to_index,
-                                                           style=payload.style, color=payload.color, clear_color=payload.clear_color))
+                                                           style=payload.style, color=payload.color, clear_color=payload.clear_color,
+                                                           labels=payload.labels))
 
 
 @router.post("/boards/{board_id}/pages", status_code=201)

@@ -9503,7 +9503,8 @@ def preview_filtered_blocks_public(
         _check_rate_limit(f"public-run:ip:{ip}", limit=_PUBLIC_RUN_RATE_LIMIT)
         _check_rate_limit(f"public-run:slug:{slug}", limit=_PUBLIC_RUN_RATE_LIMIT)
         return _public_filtered_out(_filter_page_blocks_warehouse(db, d, page, ds, payload, d.owner_id, anonymous=True))
-    out = _filter_page_blocks(db, page, df=None, ds=None, payload=payload)
+    frames, df = _public_file_frames(db, d, ds)
+    out = _filter_page_blocks(db, page, df=df, ds=ds if df is not None else None, payload=payload, dashboard=d, frames=frames)
     return _public_filtered_out(_with_file_colors(db, d, page, out, payload, anonymous=True))
 
 
@@ -9639,7 +9640,8 @@ def preview_filtered_blocks_public_by_domain(
         _check_rate_limit(f"public-run:ip:{ip}", limit=_PUBLIC_RUN_RATE_LIMIT)
         _check_rate_limit(f"public-run:domain:{hostname}", limit=_PUBLIC_RUN_RATE_LIMIT)
         return _public_filtered_out(_filter_page_blocks_warehouse(db, d, page, ds, payload, d.owner_id, anonymous=True))
-    out = _filter_page_blocks(db, page, df=None, ds=None, payload=payload)
+    frames, df = _public_file_frames(db, d, ds)
+    out = _filter_page_blocks(db, page, df=df, ds=ds if df is not None else None, payload=payload, dashboard=d, frames=frames)
     return _public_filtered_out(_with_file_colors(db, d, page, out, payload, anonymous=True))
 
 
@@ -9679,13 +9681,43 @@ def get_public_filter_options(
     page = next((p for p in d.pages if p.id == page_id), None)
     if not page:
         raise HTTPException(404, "Page not found on this dashboard.")
-    return _page_filter_options(page, column)
+    _frames, df = _public_file_frames(db, d, _dashboard_datasource(db, d, page))
+    return _page_filter_options(page, column, df)
 
 
-def _page_filter_options(page: models.DashboardPage, column: str) -> dict:
-    """Distinct values of `column` from the page's own stored block rows
-    (never the live datasource) - shared by the slug link and the company
+_PUBLIC_FILE_KINDS = {"csv", "excel", "microsoft_excel", "parquet", "json", "file"}
+
+
+def _public_file_frames(db: Session, d: models.Dashboard, ds: models.DataSource | None):
+    """2026-11-11 (R67): a published link on an UPLOADED FILE reads that file the way the owner's view does.
+    The anonymous-viewer rule (no live query, ever) exists for a customer's own credentialed warehouse or
+    database; an uploaded file is rows Euliv itself stores, so reading it touches no credentials. Without it a
+    published link listed "No values" for every filter column no chart happened to show (Category group, Order
+    channel) and filtering skipped every chart built from the data. Returns (frames, df) or (None, None)."""
+    if ds is None or str(getattr(ds, "kind", "") or "").lower() not in _PUBLIC_FILE_KINDS:
+        return None, None
+    owner = db.get(models.User, d.owner_id) if d.owner_id else None
+    if owner is None:
+        return None, None
+    try:
+        frames = _TableFrames(db, ds, owner)
+        return frames, frames.get(None)
+    except Exception as e:  # noqa: BLE001 - the stored-rows path still works
+        print(f"[public] file frames skipped: {e}")
+        return None, None
+
+
+def _page_filter_options(page: models.DashboardPage, column: str, df: pd.DataFrame | None = None) -> dict:
+    """Distinct values of `column` - from the dashboard's own uploaded file when there is one (R67), else from
+    the page's own stored block rows (never a live warehouse) - shared by the slug link and the company
     domain viewer (routers/domains.py)."""
+    if df is not None and column in df.columns:
+        series = df[column]
+        counts = series.value_counts(dropna=True)
+        top = counts.iloc[:200]
+        return {"column": column, "values": [{"value": _jsonify_scalar(i), "count": int(c)} for i, c in top.items()],
+                "null_count": int(series.isna().sum()), "distinct_total": int(counts.shape[0]), "truncated": bool(len(counts) > 200),
+                "dtype": str(series.dtype)}
     frames: list[pd.DataFrame] = []
     for block in page.blocks:
         if block.type not in ("table", "chart"):

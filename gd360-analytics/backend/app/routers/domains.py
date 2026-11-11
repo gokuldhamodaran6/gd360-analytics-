@@ -908,7 +908,9 @@ def viewer_preview(host: str, path: str, page_id: str, payload: schemas.ApplyFil
         _limits(request, host)
         return dbm._public_filtered_out(dbm._filter_page_blocks_warehouse(  # noqa: SLF001
             db, ctx.d, page, pds, payload, ctx.d.owner_id, anonymous=True))
-    out = dbm._filter_page_blocks(db, page, df=None, ds=None, payload=payload)  # noqa: SLF001
+    # R67: an uploaded file is read like the owner's view (no credentials involved) so every chart filters
+    frames, df = dbm._public_file_frames(db, ctx.d, pds)  # noqa: SLF001
+    out = dbm._filter_page_blocks(db, page, df=df, ds=pds if df is not None else None, payload=payload, dashboard=ctx.d, frames=frames)  # noqa: SLF001
     return dbm._public_filtered_out(dbm._with_file_colors(db, ctx.d, page, out, payload, anonymous=True))  # noqa: SLF001
 
 
@@ -920,7 +922,8 @@ def viewer_filter_options(host: str, path: str, page_id: str, column: str, reque
     page = _page(ctx, page_id)
     if ctx.ruled:
         return {"column": column, "values": [], "null_count": 0, "distinct_total": 0, "truncated": False, "dtype": ""}
-    return dbm._page_filter_options(page, column)  # noqa: SLF001
+    _frames, df = dbm._public_file_frames(db, ctx.d, dbm._dashboard_datasource(db, ctx.d, page))  # noqa: SLF001
+    return dbm._page_filter_options(page, column, df)  # noqa: SLF001
 
 
 @viewer_router.get("/{host}/d/{path}/parameters/{param_id}/options", response_model=schemas.ParameterOptionsOut)
