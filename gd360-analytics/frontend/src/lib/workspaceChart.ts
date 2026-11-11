@@ -57,6 +57,7 @@ import {
 } from "./chartModel";
 import { applyChartStyle, defaultChartStyle, stylePaletteColors, type ChartStyle } from "./chartStyle";
 import { buildExploreFigure, CLIENT_PIVOTABLE_TYPES, exploreTable, type ExploreConfig, type ResultColumn } from "./exploreEngine";
+import { geoPlan } from "../dashboard/charts/geo/geoModel";
 
 export type WorkspaceChartInput = {
   columns?: ResultColumn[] | null;
@@ -235,6 +236,18 @@ const PART_TO_WHOLE = new Set(["treemap", "funnel", "waterfall"]);
  *  that form's shape: one row per mark, a dimension or two, the measures.
  *  null = not this shape (the caller keeps the Plotly figure). */
 export function specialDrawing(columns: ResultColumn[], rows: Record<string, any>[], chartType: string, id: string, title: string | null): Extract<NativeDrawing, { kind: "special" }> | null {
+  // 2026-11-11 (live maps): rows with latitude + longitude (points, or two pairs = routes) always go on the live
+  // street map; a city / place column does when the answer asked for a map. Raw rows are fine here - one mark each.
+  if (rows.length && rows.length <= 50000) {
+    const geoResult = { status: "ok", columns: columns.map((c: any) => ({ name: c.name, type: c.type ?? null })), rows, row_count: rows.length,
+      computed_in: "gd360", dimensions: [], measures: [], time_column: null } as unknown as BlockResult;
+    const plan = geoPlan(geoResult);
+    const wantsMap = ["live_map", "street_map", "geo_map", "point_map", "map", "choropleth", "geo"].includes(chartType);
+    if (plan && (plan.kind !== "places" || (wantsMap && !plan.country) || chartType === "live_map")) {
+      const block = { id, type: "chart", title, x: 0, y: 0, w: 12, h: 6, position: 0, config: { chart_type: "live_map" } } as DashboardBlock;
+      return { kind: "special", type: "live_map", result: geoResult, block };
+    }
+  }
   const type = SPECIAL_FROM_CHAT[chartType];
   if (!type || !rows.length || rows.length > SPECIAL_MAX_ROWS) return null;
   const roles = classifyColumns(columns as any, rows);

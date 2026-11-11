@@ -54,7 +54,7 @@ export function brandingStyleVars(b: (DashboardBranding & { appearance?: { brand
       return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
     });
     const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b2;
-    style["--color-on-primary"] = lum > 0.35 ? "4 20 13" : "255 255 255";
+    style["--color-on-primary"] = lum > 0.35 ? "10 10 11" : "255 255 255";
   }
   if (accent) {
     style["--color-accent"] = accent;
