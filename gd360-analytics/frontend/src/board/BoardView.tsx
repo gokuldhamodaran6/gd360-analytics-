@@ -149,10 +149,10 @@ function BlockInner({ b, onPick, verb, mode = "light" }: { b: Block; onPick: (ki
     return (
       <div className="bd-card" data-bd-block={b.kind} data-bd-style={b.style || "bars"}>
         <Head b={b} right={b.show_n ? <span className="bd-muted" style={{ fontSize: 12 }}>{b.n_label || "rows"}</span> : undefined} />
-        {b.style === "columns" ? <Columns rows={b.rows || []} unit={b.unit} onPick={pick} />
+        {b.style === "columns" ? <Columns rows={b.rows || []} unit={b.unit} onPick={pick} labels={b.labels !== false} />
           : b.style === "donut" ? <Donut rows={b.rows || []} unit={b.unit} onPick={pick} />
           : <HBars rows={b.rows || []} unit={b.unit} baseline={b.baseline} showN={b.show_n} showShare={b.show_share} decimals={b.decimals}
-            onPick={pick} lollipop={b.style === "lollipop"} />}
+            onPick={pick} lollipop={b.style === "lollipop"} labels={b.labels !== false} />}
         {(b.rows || []).some((r: any) => r.small) && <span className="bd-note">* Under 30 in the group: too few to read much into.</span>}
         {b.note && <span className="bd-note">{b.note}</span>}
       </div>
@@ -162,8 +162,8 @@ function BlockInner({ b, onPick, verb, mode = "light" }: { b: Block; onPick: (ki
     return (
       <div className="bd-card" data-bd-block={b.kind} data-bd-style={b.style || "area"}>
         <Head b={b} right={<span className="bd-legend">{b.compare ? <><i className="a" />This year <i className="c" />Year before</> : null}{b.baseline?.value != null ? <><i className="d" />{b.baseline.label}</> : null}</span>} />
-        {b.style === "columns" ? <Columns rows={(b.points || []).map((p) => ({ label: p.label, value: p.value }))} unit={b.unit} height={210} />
-          : <LineArea points={b.points || []} compare={b.compare} unit={b.unit} baseline={b.baseline} fill={b.style !== "line"} />}
+        {b.style === "columns" ? <Columns rows={(b.points || []).map((p) => ({ label: p.label, value: p.value }))} unit={b.unit} height={210} labels={b.labels !== false} />
+          : <LineArea points={b.points || []} compare={b.compare} unit={b.unit} baseline={b.baseline} fill={b.style !== "line"} labels={b.labels !== false} />}
       </div>
     );
   }

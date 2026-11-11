@@ -88,11 +88,13 @@ export function Spark({ values, tone = "accent", height = 40 }: { values: (numbe
 }
 
 /** Horizontal bars, one scale, optional dashed baseline; labels on the left, values on the right. */
-export function HBars({ rows, unit, baseline, showN, showShare, decimals, onPick, lollipop = false }: {
+export function HBars({ rows, unit, baseline, showN, showShare, decimals, onPick, lollipop = false, labels = true }: {
   rows: { label: string; value: number | null; n?: number; count?: number; share?: number; tone?: Tone; small?: boolean }[]; unit?: Unit;
   baseline?: { value: number | null; label: string } | null; showN?: boolean; showShare?: boolean; decimals?: number; onPick?: (label: string) => void;
   /** R67: a thin stem with a dot at the value */
   lollipop?: boolean;
+  /** R67: the editor's "data labels" switch */
+  labels?: boolean;
 }) {
   const [ref, w] = useWidth<HTMLDivElement>();
   const vals = rows.map((r) => r.value || 0).concat(baseline?.value ? [baseline.value] : []);
@@ -124,9 +126,9 @@ export function HBars({ rows, unit, baseline, showN, showShare, decimals, onPick
                   <rect x={labelW + 10} y={y + 4} width={track} height={14} rx={7} className="trk" />
                   <rect x={labelW + 10} y={y + 4} width={Math.max(x(r.value || 0) - labelW - 10, 3)} height={14} rx={7} fill={toneVar(r.tone)} opacity={r.small ? 0.4 : 1} />
                 </>}
-                <text x={labelW + 10 + track + 10} y={y + 15} className="vl">{fmt(r.value, unit, { decimals, compact: true })}</text>
-                {showN && r.n != null && <text x={w - 2} y={y + 15} textAnchor="end" className="mt">{r.n.toLocaleString()}</text>}
-                {showShare && r.share != null && <text x={w - 2} y={y + 15} textAnchor="end" className="mt">{r.share.toFixed(1)}%</text>}
+                {labels && <text x={labelW + 10 + track + 10} y={y + 15} className="vl">{fmt(r.value, unit, { decimals, compact: true })}</text>}
+                {labels && showN && r.n != null && <text x={w - 2} y={y + 15} textAnchor="end" className="mt">{r.n.toLocaleString()}</text>}
+                {labels && showShare && r.share != null && <text x={w - 2} y={y + 15} textAnchor="end" className="mt">{r.share.toFixed(1)}%</text>}
               </g>
             );
           })}
@@ -226,8 +228,8 @@ export function useMounted(): boolean {
 
 
 /** R67: vertical columns - for a breakdown drawn as columns, or a monthly series drawn as bars. */
-export function Columns({ rows, unit, height = 230, onPick }: {
-  rows: { label: string; value: number | null; tone?: Tone }[]; unit?: Unit; height?: number; onPick?: (label: string) => void;
+export function Columns({ rows, unit, height = 230, onPick, labels = true }: {
+  rows: { label: string; value: number | null; tone?: Tone }[]; unit?: Unit; height?: number; onPick?: (label: string) => void; labels?: boolean;
 }) {
   const [ref, w] = useWidth<HTMLDivElement>();
   const vals = rows.map((r) => r.value || 0);
@@ -254,7 +256,7 @@ export function Columns({ rows, unit, height = 230, onPick }: {
               <g key={i} className={onPick ? "pick" : undefined} onClick={onPick ? () => onPick(r.label) : undefined}>
                 <title>{`${label}: ${fmt(r.value, unit)}`}</title>
                 <rect x={cx - bw / 2} y={top} width={bw} height={Math.max(H - B - top, 2)} rx={Math.min(6, bw / 3)} fill={toneVar(r.tone)} />
-                {slot >= 44 && <text x={cx} y={top - 6} textAnchor="middle" className="vl">{fmt(r.value, unit, { compact: true })}</text>}
+                {labels && slot >= 44 && <text x={cx} y={top - 6} textAnchor="middle" className="vl">{fmt(r.value, unit, { compact: true })}</text>}
                 {i % every === 0 && <text x={cx} y={H - 12} textAnchor="middle" className="mt">{label.length > room ? label.slice(0, room - 1) + "…" : label}</text>}
               </g>
             );
