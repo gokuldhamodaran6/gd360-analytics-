@@ -6,6 +6,7 @@ import ThemeToggle from "../components/ThemeToggle";
 import { DataFreshnessBadge } from "../components/DashboardBlocks";
 import { DashboardShell, useDashboardRun, useDashboardViewMode, type RunSource } from "../dashboard";
 import { brandingBackgroundImageStyle, brandingStyleVars } from "../lib/branding";
+import { BoardView } from "../board/BoardView";
 
 // 2026-09-24 (Dashboard Builder Phase 1 + Phase 3): the anonymous, no-login
 // viewer a published dashboard's public OR private link actually opens -
@@ -332,7 +333,12 @@ export default function PublicDashboardView() {
                 (src/dashboard/), over the public run/options endpoints
                 with the viewer token - no owner-only actions, comments
                 hidden. See PublicDashboardBody below. */}
-            <PublicDashboardBody
+            {dash.board ? (
+              <div className="max-w-[1400px] mx-auto px-2 sm:px-4" data-public-board="">
+                <BoardView id="public" summary={dash.board} publicView
+                  runFn={(pageId, filters) => publicDashboardApi.runBoard(resolverKey, byHostname, { page_id: pageId, filters }, viewerToken)} />
+              </div>
+            ) : <PublicDashboardBody
               dash={dash}
               activePage={activePage}
               activePageIndex={activePageIndex}
@@ -340,7 +346,7 @@ export default function PublicDashboardView() {
               byHostname={byHostname}
               resolverKey={resolverKey}
               viewerToken={viewerToken}
-            />
+            />}
 
             {/* White-label: no Euliv upsell footer on a customer's own domain. */}
             {!byHostname && (

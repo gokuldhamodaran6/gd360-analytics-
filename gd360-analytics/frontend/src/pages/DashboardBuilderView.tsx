@@ -1,4 +1,5 @@
 import { setShowOrigins, useShowOrigins } from "../dashboard/blockIcons";
+import { captureThumbnail } from "../lib/snapshot";
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { MadeFromLink, sourceHref } from "../lib/kinds";
 import { Link, useLocation, useParams } from "react-router-dom";
@@ -1159,6 +1160,12 @@ function DashboardBuilderViewBody({
   handleWorkspaceCreated: (ws: WorkspaceSummary) => void;
 }) {
   const isEditing = dash.can_edit && editing;
+  // R67: a real picture of this dashboard for its card on the Dashboards list (once its charts have drawn)
+  useEffect(() => {
+    if (!dash.can_edit || isEditing) return;
+    const t = window.setTimeout(() => void captureThumbnail(document.querySelector<HTMLElement>("[data-dashboard-shell]"), dash.id), 7000);
+    return () => window.clearTimeout(t);
+  }, [dash.id, dash.can_edit, isEditing]);
   // 2026-10-14 (R47): on the conversation's canvas (?embed=1) the dashboard shows in ITS theme
   // (appearance.theme_default, as the published link does) - "make it dark" in the chat is visible at once.
   const setTransientTheme = useTransientTheme();

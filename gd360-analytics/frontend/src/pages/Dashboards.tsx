@@ -95,7 +95,7 @@ function MiniTile({ tile }: { tile: PreviewTile }) {
 function BoardThumb({ board, compact = false }: { board: NonNullable<DashboardSummary["board"]>; compact?: boolean }) {
   const p = board.palette;
   return (
-    <div aria-hidden="true" data-thumb="board" className={`${compact ? "h-full" : "h-[118px] border-b border-border"} p-2.5 grid gap-[4px]`}
+    <div aria-hidden="true" data-thumb="board" className={`${compact ? "h-full" : "h-[188px] border-b border-border"} p-2.5 grid gap-[4px]`}
       style={{ background: p.bg, gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gridTemplateRows: "1fr 1fr 1.2fr" }}>
       <span style={{ background: p.card, gridColumn: "1 / 3", gridRow: "1 / 3", borderRadius: 5, position: "relative", overflow: "hidden" }}>
         <svg viewBox="0 0 100 40" preserveAspectRatio="none" style={{ position: "absolute", left: "8%", right: "8%", bottom: "12%", width: "84%", height: "45%" }}>
@@ -116,7 +116,15 @@ function BoardThumb({ board, compact = false }: { board: NonNullable<DashboardSu
 }
 
 // The dashboard's own first page, drawn to scale from its tile layout (the top of it).
-function Thumb({ preview, classic, compact = false, board }: { preview?: PreviewTile[]; classic: boolean; compact?: boolean; board?: DashboardSummary["board"] }) {
+function Thumb({ preview, classic, compact = false, board, image, name }: { preview?: PreviewTile[]; classic: boolean; compact?: boolean; board?: DashboardSummary["board"]; image?: string | null; name?: string }) {
+  // R67: the dashboard itself - a picture its editor's browser drew the last time it was opened
+  if (image) {
+    return (
+      <div className={`dash-shot ${compact ? "h-full" : "h-[188px]"}`} data-thumb="image">
+        <img src={image} alt={name ? `${name} - preview` : ""} loading="lazy" decoding="async" />
+      </div>
+    );
+  }
   if (board) return <BoardThumb board={board} compact={compact} />;
   const ROWS = compact ? 12 : 14;
   const tiles = (preview || []).filter((t) => t.y < ROWS).map((t) => ({ ...t, h: Math.min(t.h, ROWS - t.y), w: Math.min(t.w, 12 - t.x) }));
@@ -124,7 +132,7 @@ function Thumb({ preview, classic, compact = false, board }: { preview?: Preview
     <div
       aria-hidden="true"
       data-thumb={tiles.length ? "layout" : "empty"}
-      className={`${compact ? "h-full" : "h-[118px] border-b border-border"} bg-base p-2.5 grid gap-[3px]`}
+      className={`${compact ? "h-full" : "h-[188px] border-b border-border"} bg-base p-2.5 grid gap-[3px]`}
       style={{ gridTemplateColumns: "repeat(12, minmax(0, 1fr))", gridTemplateRows: `repeat(${ROWS}, minmax(0, 1fr))` }}
     >
       {tiles.length ? tiles.map((t, i) => <MiniTile key={i} tile={t} />) : (
@@ -331,16 +339,16 @@ function DashboardCard({
     return (
       <div className="dash-card flex items-stretch overflow-hidden" data-dashboard-card="">
         <Link to={href} tabIndex={-1} aria-hidden="true" className="hidden sm:block w-[132px] shrink-0 border-r border-border">
-          <Thumb preview={d.preview} classic={classic} compact board={d.board} />
+          <Thumb preview={d.preview} classic={classic} compact board={d.board} image={d.thumbnail} name={d.name} />
         </Link>
         {body}
       </div>
     );
   }
   return (
-    <div className="dash-card overflow-hidden flex flex-col" data-dashboard-card="">
+    <div className="dash-card dash-card-v2 overflow-hidden flex flex-col" data-dashboard-card="">
       <Link to={href} tabIndex={-1} aria-hidden="true">
-        <Thumb preview={d.preview} classic={classic} board={d.board} />
+        <Thumb preview={d.preview} classic={classic} board={d.board} image={d.thumbnail} name={d.name} />
       </Link>
       {body}
     </div>
