@@ -14,27 +14,27 @@ export { SIGNATURE_COLORS };
 export const SERIES: readonly string[] = SIGNATURE_COLORS.slice(0, 6);
 
 /** The colour of a chart that has exactly one series. */
-export const SINGLE_SERIES = "#0f5c46";
+export const SINGLE_SERIES = "#244ceb";
 
 /** One-hue sequential ramp (heatmaps, choropleths), light -> dark. */
-export const SEQUENTIAL: readonly string[] = ["#e8f3ee", "#c3dfd3", "#8fc4ad", "#4f9a7c", "#1f6f55", "#0f4a38"];
+export const SEQUENTIAL: readonly string[] = ["#ebf0ff", "#c8d4fc", "#8ca5fc", "#5073fa", "#2d5bff", "#1837b4"];
 
 /** The same ramp for dark mode: derived from the dark primary so "more"
  *  still reads as "more contrast against the page". */
-export const SEQUENTIAL_DARK: readonly string[] = ["#122521", "#144234", "#1f6e55", "#4f9a7c", "#8fc4ad", "#c3dfd3"];
+export const SEQUENTIAL_DARK: readonly string[] = ["#0E1633", "#16286E", "#1E3EB4", "#2D5BFF", "#6E8FFF", "#BECDFF"];
 
 export const BRAND = {
-  primary: "#0f5c46",
-  accent: "#2d8267",
-  tint: "#e8f3ee",
-  tintBorder: "#c3dfd3",
+  primary: "#244ceb",
+  accent: "#3d66ff",
+  tint: "#ebf0ff",
+  tintBorder: "#c8d4fc",
   // Dark-mode counterparts (System.dc.html "Dark mode").
-  primaryDark: "#43e5a0",
-  accentDark: "#6ec9aa",
+  primaryDark: "#3d66ff",
+  accentDark: "#8EA6FF",
 } as const;
 
 export const STATUS = {
-  good: { ink: "#0f5c46", fill: "#e8f3ee", border: "#c3dfd3" },
+  good: { ink: "#15803d", fill: "#e8f6ed", border: "#bee4cb" },
   warning: { ink: "#b45309", fill: "#fdf1e3", border: "#f3dcbd" },
   danger: { ink: "#b42318", fill: "#fdecea", border: "#f6c9c4" },
 } as const;
