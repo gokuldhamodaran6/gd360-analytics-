@@ -88,9 +88,11 @@ export function Spark({ values, tone = "accent", height = 40 }: { values: (numbe
 }
 
 /** Horizontal bars, one scale, optional dashed baseline; labels on the left, values on the right. */
-export function HBars({ rows, unit, baseline, showN, showShare, decimals, onPick }: {
+export function HBars({ rows, unit, baseline, showN, showShare, decimals, onPick, lollipop = false }: {
   rows: { label: string; value: number | null; n?: number; count?: number; share?: number; tone?: Tone; small?: boolean }[]; unit?: Unit;
   baseline?: { value: number | null; label: string } | null; showN?: boolean; showShare?: boolean; decimals?: number; onPick?: (label: string) => void;
+  /** R67: a thin stem with a dot at the value */
+  lollipop?: boolean;
 }) {
   const [ref, w] = useWidth<HTMLDivElement>();
   const vals = rows.map((r) => r.value || 0).concat(baseline?.value ? [baseline.value] : []);
@@ -115,8 +117,13 @@ export function HBars({ rows, unit, baseline, showN, showShare, decimals, onPick
                 <title>{`${label}: ${fmt(r.value, unit, { decimals })}${r.n != null ? ` · ${r.n.toLocaleString()} rows` : ""}${onPick ? " · click to filter" : ""}`}</title>
                 <rect x={0} y={y} width={w} height={rowH} fill="transparent" className="hit" />
                 <text x={labelW} y={y + 15} textAnchor="end" className={r.small ? "lb sm" : "lb"}>{clipped}{r.small ? " *" : ""}</text>
-                <rect x={labelW + 10} y={y + 4} width={track} height={14} rx={7} className="trk" />
-                <rect x={labelW + 10} y={y + 4} width={Math.max(x(r.value || 0) - labelW - 10, 3)} height={14} rx={7} fill={toneVar(r.tone)} opacity={r.small ? 0.4 : 1} />
+                {lollipop ? <>
+                  <line x1={labelW + 10} y1={y + 11} x2={Math.max(x(r.value || 0), labelW + 12)} y2={y + 11} stroke={toneVar(r.tone)} strokeWidth={2} opacity={r.small ? 0.4 : 0.55} />
+                  <circle cx={Math.max(x(r.value || 0), labelW + 12)} cy={y + 11} r={6} fill={toneVar(r.tone)} opacity={r.small ? 0.4 : 1} />
+                </> : <>
+                  <rect x={labelW + 10} y={y + 4} width={track} height={14} rx={7} className="trk" />
+                  <rect x={labelW + 10} y={y + 4} width={Math.max(x(r.value || 0) - labelW - 10, 3)} height={14} rx={7} fill={toneVar(r.tone)} opacity={r.small ? 0.4 : 1} />
+                </>}
                 <text x={labelW + 10 + track + 10} y={y + 15} className="vl">{fmt(r.value, unit, { decimals, compact: true })}</text>
                 {showN && r.n != null && <text x={w - 2} y={y + 15} textAnchor="end" className="mt">{r.n.toLocaleString()}</text>}
                 {showShare && r.share != null && <text x={w - 2} y={y + 15} textAnchor="end" className="mt">{r.share.toFixed(1)}%</text>}
@@ -136,8 +143,10 @@ export function HBars({ rows, unit, baseline, showN, showShare, decimals, onPick
 }
 
 /** A line with a soft area, labelled points, optional dashed comparison series and baseline. */
-export function LineArea({ points, compare, unit, baseline, height = 210, labels = true, axis = true }: {
+export function LineArea({ points, compare, unit, baseline, height = 210, labels = true, axis = true, fill = true }: {
   points: Point[]; compare?: Point[] | null; unit?: Unit; baseline?: { value: number | null; label: string } | null; height?: number; labels?: boolean; axis?: boolean;
+  /** R67: false draws a plain line (the "Line" style); the default is the soft area */
+  fill?: boolean;
 }) {
   const [ref, w] = useWidth<HTMLDivElement>();
   const id = useRef(`la${Math.random().toString(36).slice(2, 8)}`).current;
@@ -185,7 +194,7 @@ export function LineArea({ points, compare, unit, baseline, height = 210, labels
           ))}
           {baseline?.value != null && <line x1={L} y1={y(baseline.value)} x2={W - R} y2={y(baseline.value)} className="base" />}
           {cline && <path d={cline} fill="none" className="cmp" />}
-          <path d={`${line} L${pts[pts.length - 1][0]},${H - B} L${pts[0][0]},${H - B} Z`} fill={`url(#${id})`} />
+          {fill && <path d={`${line} L${pts[pts.length - 1][0]},${H - B} L${pts[0][0]},${H - B} Z`} fill={`url(#${id})`} />}
           <path d={line} fill="none" stroke="var(--bd-accent)" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
           {pts.map(([px, py, p], i) => (
             <g key={i}>
@@ -213,4 +222,83 @@ export function useMounted(): boolean {
   const [m, setM] = useState(false);
   useEffect(() => { const t = setTimeout(() => setM(true), 10); return () => clearTimeout(t); }, []);
   return m;
+}
+
+
+/** R67: vertical columns - for a breakdown drawn as columns, or a monthly series drawn as bars. */
+export function Columns({ rows, unit, height = 230, onPick }: {
+  rows: { label: string; value: number | null; tone?: Tone }[]; unit?: Unit; height?: number; onPick?: (label: string) => void;
+}) {
+  const [ref, w] = useWidth<HTMLDivElement>();
+  const vals = rows.map((r) => r.value || 0);
+  const max = niceMax(Math.max(...vals, 0.0001) * 1.1);
+  const L = 46, R = 8, T = 18, B = 34;
+  const W = Math.max(w, 200), H = height;
+  const n = Math.max(rows.length, 1);
+  const slot = (W - L - R) / n;
+  const bw = Math.min(Math.max(slot * 0.62, 6), 56);
+  const y = (v: number) => T + (1 - Math.max(v, 0) / max) * (H - T - B);
+  const ticks = [0, max / 2, max];
+  const every = Math.max(1, Math.ceil(n / Math.max(Math.floor((W - L - R) / 64), 1)));
+  return (
+    <div ref={ref} className="bd-chart" style={{ height: H }}>
+      {w > 0 && (
+        <svg width={W} height={H} role="img" aria-label={rows.map((r) => `${r.label} ${fmt(r.value, unit)}`).join(", ")}>
+          {ticks.map((t, i) => <g key={i}><line x1={L} y1={y(t)} x2={W - R} y2={y(t)} className="grid" /><text x={L - 8} y={y(t) + 4} textAnchor="end" className="mt">{fmt(t, unit, { compact: true })}</text></g>)}
+          {rows.map((r, i) => {
+            const cx = L + slot * i + slot / 2;
+            const top = y(r.value || 0);
+            const label = cap(String(r.label));
+            const room = Math.max(3, Math.floor((slot * every) / 6.5));
+            return (
+              <g key={i} className={onPick ? "pick" : undefined} onClick={onPick ? () => onPick(r.label) : undefined}>
+                <title>{`${label}: ${fmt(r.value, unit)}`}</title>
+                <rect x={cx - bw / 2} y={top} width={bw} height={Math.max(H - B - top, 2)} rx={Math.min(6, bw / 3)} fill={toneVar(r.tone)} />
+                {slot >= 44 && <text x={cx} y={top - 6} textAnchor="middle" className="vl">{fmt(r.value, unit, { compact: true })}</text>}
+                {i % every === 0 && <text x={cx} y={H - 12} textAnchor="middle" className="mt">{label.length > room ? label.slice(0, room - 1) + "…" : label}</text>}
+              </g>
+            );
+          })}
+        </svg>
+      )}
+    </div>
+  );
+}
+
+/** R67: a donut with the total in the middle and a legend - shares of a whole (at most 6 slices, the rest as "Other"). */
+export function Donut({ rows, unit, onPick }: { rows: { label: string; value: number | null }[]; unit?: Unit; onPick?: (label: string) => void }) {
+  const [ref, w] = useWidth<HTMLDivElement>();
+  const clean = rows.filter((r) => (r.value || 0) > 0).map((r) => ({ label: String(r.label), value: r.value || 0 }));
+  const top = clean.slice(0, 5);
+  const rest = clean.slice(5).reduce((a, r) => a + r.value, 0);
+  const parts = rest > 0 ? [...top, { label: "Other", value: rest }] : top;
+  const total = parts.reduce((a, r) => a + r.value, 0) || 1;
+  const size = Math.min(200, Math.max(140, (w || 300) * 0.42));
+  const r0 = size / 2 - 4, r1 = r0 * 0.62;
+  const shades = [1, 0.78, 0.6, 0.45, 0.32, 0.2];
+  let a0 = -Math.PI / 2;
+  const arc = (a: number, b: number) => {
+    const big = b - a > Math.PI ? 1 : 0;
+    const p = (r: number, t: number) => `${size / 2 + r * Math.cos(t)},${size / 2 + r * Math.sin(t)}`;
+    return `M${p(r0, a)} A${r0},${r0} 0 ${big} 1 ${p(r0, b)} L${p(r1, b)} A${r1},${r1} 0 ${big} 0 ${p(r1, a)} Z`;
+  };
+  return (
+    <div ref={ref} className="bd-donut">
+      <svg width={size} height={size} role="img" aria-label={parts.map((p) => `${p.label} ${((p.value / total) * 100).toFixed(1)}%`).join(", ")}>
+        {parts.map((p, i) => {
+          const a1 = a0 + (p.value / total) * Math.PI * 2 - (parts.length > 1 ? 0.012 : 0);
+          const d = arc(a0, Math.max(a1, a0 + 0.001));
+          a0 = a0 + (p.value / total) * Math.PI * 2;
+          return <path key={i} d={d} fill="var(--bd-accent)" opacity={shades[i] ?? 0.2} className={onPick ? "pick" : undefined} onClick={onPick ? () => onPick(p.label) : undefined}><title>{`${p.label}: ${fmt(p.value, unit)} · ${((p.value / total) * 100).toFixed(1)}%`}</title></path>;
+        })}
+        <text x={size / 2} y={size / 2 - 2} textAnchor="middle" className="dv">{fmt(total, unit, { compact: true })}</text>
+        <text x={size / 2} y={size / 2 + 16} textAnchor="middle" className="mt">total</text>
+      </svg>
+      <ul className="bd-dleg">
+        {parts.map((p, i) => (
+          <li key={i}><i style={{ background: "var(--bd-accent)", opacity: shades[i] ?? 0.2 }} /><span className="l">{cap(p.label)}</span><span className="v">{((p.value / total) * 100).toFixed(1)}%</span></li>
+        ))}
+      </ul>
+    </div>
+  );
 }

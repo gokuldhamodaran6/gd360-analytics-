@@ -4,7 +4,8 @@
 // the conversation and full-screen at /boards/:id; the Excel and PowerPoint downloads come from the same spec.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { boardsApi, type Block, type BoardSummary, type HomeData, type PageRun } from "../api/boards";
-import { cap, fmt, HBars, HeroCurve, LineArea, setBoardCurrency, Spark, toneVar } from "./charts";
+import { cap, Columns, Donut, fmt, HBars, HeroCurve, LineArea, setBoardCurrency, Spark, toneVar } from "./charts";
+import { useThemeMode } from "../api/ThemeContext";
 import { LiveMap } from "../dashboard/charts/LiveMap";
 import type { BlockResult } from "../api/client";
 import "./board.css";
@@ -120,7 +121,8 @@ function MapBlock({ b, mode }: { b: Block; mode: string }) {
   }, [b.rows, mKey]);
   const block = useMemo(() => ({ id: b.id, title: b.title ?? null, config: {
     chart_type: "live_map", format: b.unit === "money" ? "currency" : "number", ...(b.unit === "money" ? { currency: b.currency || "USD" } : {}),
-  } }), [b.id, b.title, b.unit, b.currency]);
+    ...(b.style && ["bubbles", "heat", "points"].includes(b.style) ? { map_mode: b.style } : {}),
+  } }), [b.id, b.title, b.unit, b.currency, b.style]);
   return (
     <div className="bd-card bd-map" data-bd-block={b.kind}>
       <Head b={b} />
@@ -131,17 +133,26 @@ function MapBlock({ b, mode }: { b: Block; mode: string }) {
 }
 
 function BlockView({ b, onPick, verb, mode = "light" }: { b: Block; onPick: (kind: string, label: string) => void; verb: string; mode?: string }) {
+  // R67: a block's own colour (from the editor) rides the same --bd-accent every chart already draws with
+  const inner = <BlockInner b={b} onPick={onPick} verb={verb} mode={mode} />;
+  return b.color ? <div className="bd-tint" style={{ "--bd-accent": b.color, "--bd-brand": b.color } as React.CSSProperties}>{inner}</div> : inner;
+}
+
+function BlockInner({ b, onPick, verb, mode = "light" }: { b: Block; onPick: (kind: string, label: string) => void; verb: string; mode?: string }) {
   if (b.type === "map") return <MapBlock b={b} mode={mode} />;
   if (b.type === "kpi") return <Kpi b={b} />;
   if (b.type === "table") return <Table b={b} />;
   if (b.type === "list") return <List b={b} />;
   if (b.type === "tiers") return <Tiers b={b} verb={verb} />;
   if (b.type === "bars") {
+    const pick = b.kind === "o_dim" || b.kind === "g_dim" ? (l: string) => onPick(b.kind, l) : undefined;
     return (
-      <div className="bd-card" data-bd-block={b.kind}>
+      <div className="bd-card" data-bd-block={b.kind} data-bd-style={b.style || "bars"}>
         <Head b={b} right={b.show_n ? <span className="bd-muted" style={{ fontSize: 12 }}>{b.n_label || "rows"}</span> : undefined} />
-        <HBars rows={b.rows || []} unit={b.unit} baseline={b.baseline} showN={b.show_n} showShare={b.show_share} decimals={b.decimals}
-          onPick={b.kind === "o_dim" || b.kind === "g_dim" ? (l) => onPick(b.kind, l) : undefined} />
+        {b.style === "columns" ? <Columns rows={b.rows || []} unit={b.unit} onPick={pick} />
+          : b.style === "donut" ? <Donut rows={b.rows || []} unit={b.unit} onPick={pick} />
+          : <HBars rows={b.rows || []} unit={b.unit} baseline={b.baseline} showN={b.show_n} showShare={b.show_share} decimals={b.decimals}
+            onPick={pick} lollipop={b.style === "lollipop"} />}
         {(b.rows || []).some((r: any) => r.small) && <span className="bd-note">* Under 30 in the group: too few to read much into.</span>}
         {b.note && <span className="bd-note">{b.note}</span>}
       </div>
@@ -149,9 +160,10 @@ function BlockView({ b, onPick, verb, mode = "light" }: { b: Block; onPick: (kin
   }
   if (b.type === "line") {
     return (
-      <div className="bd-card" data-bd-block={b.kind}>
+      <div className="bd-card" data-bd-block={b.kind} data-bd-style={b.style || "area"}>
         <Head b={b} right={<span className="bd-legend">{b.compare ? <><i className="a" />This year <i className="c" />Year before</> : null}{b.baseline?.value != null ? <><i className="d" />{b.baseline.label}</> : null}</span>} />
-        <LineArea points={b.points || []} compare={b.compare} unit={b.unit} baseline={b.baseline} />
+        {b.style === "columns" ? <Columns rows={(b.points || []).map((p) => ({ label: p.label, value: p.value }))} unit={b.unit} height={210} />
+          : <LineArea points={b.points || []} compare={b.compare} unit={b.unit} baseline={b.baseline} fill={b.style !== "line"} />}
       </div>
     );
   }
@@ -166,7 +178,18 @@ function BlockView({ b, onPick, verb, mode = "light" }: { b: Block; onPick: (kin
 export type BoardStudio = {
   selected: string | null; onSelect: (b: Block | null) => void; changed: Record<string, string>; float?: (b: Block) => ReactNode;
   onPage?: (id: string) => void; onFilters?: (f: Record<string, string>) => void; onRun?: (r: PageRun) => void; right?: ReactNode; editable?: boolean;
+  // R67: Power BI-style editing - drag a block to move it, drag its corner to resize it, add and manage pages
+  onMove?: (blockId: string, toIndex: number) => void; onResize?: (blockId: string, span: number, h: number) => void;
+  onAddPage?: () => void; onPageMenu?: (pageId: string, action: "rename" | "delete") => void; page?: string | null;
+  /** the editor's "draw a thumbnail of this dashboard" - called once the first page has drawn */
+  onSnapshot?: (el: HTMLElement) => void;
+  /** a comment chip on each block */
+  blockExtra?: (b: Block) => ReactNode;
 };
+
+/** R67: the board in the app's own dark mode - a light theme's colours swapped for Midnight & Cobalt, keeping the
+ *  board's own accent (a brand colour stays the brand colour). Exports keep the theme the owner chose. */
+const MIDNIGHT = { bg: "#0A0A0B", card: "#131316", ink: "#EDEDEF", good: "#4ADE80", warn: "#F87171" };
 
 function fresh(iso?: string): boolean {
   if (!iso) return false;
@@ -227,9 +250,43 @@ function Home({ h, sum, onOpen }: { h: HomeData; sum: BoardSummary; onOpen: (id:
   );
 }
 
-export function BoardView({ id, embedded = false, version = 0, onAsk, studio }: { id: string; embedded?: boolean; version?: number; onAsk?: (q: string) => void; studio?: BoardStudio }) {
-  const [sum, setSum] = useState<BoardSummary | null>(null);
-  const [page, setPage] = useState<string>("home");
+const KIND_LABEL: Record<string, string> = {
+  csv: "CSV file", excel: "Excel file", file: "File", bigquery: "BigQuery", postgres: "PostgreSQL", postgresql: "PostgreSQL", mysql: "MySQL",
+  snowflake: "Snowflake", redshift: "Redshift", databricks: "Databricks", sqlserver: "SQL Server", ga4: "Google Analytics 4", sheets: "Google Sheets",
+};
+
+/** R67: which data a dashboard was built from - always on screen, with the table, rows and a way to open the source. */
+function SourceChip({ sum, run }: { sum: BoardSummary; run: PageRun | null }) {
+  const si = sum.source_info;
+  const name = si?.name || sum.source?.name;
+  if (!name) return null;
+  const kind = si?.kind ? (KIND_LABEL[String(si.kind).toLowerCase()] || cap(String(si.kind).replace(/_/g, " "))) : null;
+  const rows = run?.rows_total ?? si?.rows ?? null;
+  const tip = [`Built from ${name}`, kind, si?.table ? `table ${si.table}` : null, rows != null ? `${rows.toLocaleString()} rows` : null,
+    run ? `computed ${new Date(run.refreshed_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}` : null].filter(Boolean).join(" · ");
+  const body = (
+    <>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5" /><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" />
+      </svg>
+      <span className="k">Data</span><b>{name}</b>{kind && <span className="t">{kind}</span>}{rows != null && <span className="t">{rows.toLocaleString()} rows</span>}
+    </>
+  );
+  return si?.id
+    ? <a className="bd-src" href={`/data?report=${encodeURIComponent(si.id)}`} title={`${tip} · open the source`} data-bd-source="">{body}</a>
+    : <span className="bd-src" title={tip} data-bd-source="">{body}</span>;
+}
+
+export function BoardView({ id, embedded = false, version = 0, onAsk, studio, summary, runFn, publicView = false }: {
+  id: string; embedded?: boolean; version?: number; onAsk?: (q: string) => void; studio?: BoardStudio;
+  /** R67: a published link hands the summary in and computes pages through the public endpoint */
+  summary?: BoardSummary; runFn?: (pageId: string | null, filters: Record<string, string>) => Promise<PageRun>; publicView?: boolean;
+}) {
+  const [sum, setSum] = useState<BoardSummary | null>(summary || null);
+  const [page, setPage] = useState<string>(summary?.pages[0]?.id || "");
+  const appMode = useThemeMode();
+  const runRef = useRef(runFn);
+  runRef.current = runFn;
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [run, setRun] = useState<PageRun | null>(null);
   const [loading, setLoading] = useState(true);
@@ -240,11 +297,12 @@ export function BoardView({ id, embedded = false, version = 0, onAsk, studio }: 
 
   useEffect(() => {
     let live = true;
+    if (summary) { setSum(summary); setPage((p) => (summary.pages.some((x) => x.id === p) ? p : summary.pages[0]?.id || "")); return () => { live = false; }; }
     boardsApi.get(id).then((s) => {
       if (!live) return;
       setSum(s);
       setFilters(s.default_filters || {});
-      setPage((p) => (s.pages.some((x) => x.id === p) ? p : s.pages[0]?.id || "home"));
+      setPage((p) => (studio?.page && s.pages.some((x) => x.id === studio.page) ? studio.page : s.pages.some((x) => x.id === p) ? p : s.pages[0]?.id || ""));
     }).catch((e) => setErr(e?.response?.data?.detail || "Couldn't open this dashboard."));
     return () => { live = false; };
   }, [id, version]);
@@ -254,7 +312,7 @@ export function BoardView({ id, embedded = false, version = 0, onAsk, studio }: 
     const my = ++seq.current;
     setLoading(true);
     try {
-      const r = await boardsApi.run(id, page, filters);
+      const r = runRef.current ? await runRef.current(page || null, filters) : await boardsApi.run(id, page || null, filters);
       if (my === seq.current) { setRun(r); setErr(null); }
     } catch (e: any) {
       if (my === seq.current) setErr(e?.response?.data?.detail || "Couldn't compute this page.");
@@ -269,11 +327,83 @@ export function BoardView({ id, embedded = false, version = 0, onAsk, studio }: 
   useEffect(() => { studio?.onFilters?.(filters); }, [filters]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (run) studio?.onRun?.(run); }, [run]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // R67: the app in dark mode shows a light-themed board dark too (the owner's theme still decides the exports)
+  const dark = !!sum && (sum.palette.mode === "dark" || appMode === "dark");
   const style = useMemo(() => {
     if (!sum) return undefined;
     const p = sum.palette;
-    return { "--bd-bg": p.bg, "--bd-card": p.card, "--bd-ink": p.ink, "--bd-accent": p.accent, "--bd-warn": p.warn, "--bd-good": p.good } as React.CSSProperties;
-  }, [sum]);
+    const swap = appMode === "dark" && p.mode === "light";
+    const accent = swap && !sum.accent && p.accent.toUpperCase() === "#2F6FE4" ? "#3D66FF" : p.accent;
+    return { "--bd-bg": swap ? MIDNIGHT.bg : p.bg, "--bd-card": swap ? MIDNIGHT.card : p.card, "--bd-ink": swap ? MIDNIGHT.ink : p.ink,
+      "--bd-accent": accent, "--bd-brand": accent, "--bd-warn": swap ? MIDNIGHT.warn : p.warn, "--bd-good": swap ? MIDNIGHT.good : p.good } as React.CSSProperties;
+  }, [sum, appMode]);
+
+  // R67: drag to move, drag the corner to resize - a live preview while the mouse is down, one save on release
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [drag, setDrag] = useState<{ id: string; dx: number; dy: number; over: number | null } | null>(null);
+  const [size, setSize] = useState<{ id: string; span: number; h: number } | null>(null);
+  const dragged = useRef(false);
+  const startDrag = (e: React.PointerEvent, b: Block, index: number) => {
+    if (!studio?.editable || !studio.onMove || e.button !== 0) return;
+    const t = e.target as HTMLElement;
+    if (t.closest(".sd-float, .sd-handle, button, select, a, input, textarea, .eu-map, .bd-cmt")) return;
+    const x0 = e.clientX, y0 = e.clientY;
+    let moving = false;
+    dragged.current = false;
+    const move = (ev: PointerEvent) => {
+      const dx = ev.clientX - x0, dy = ev.clientY - y0;
+      if (!moving && Math.hypot(dx, dy) < 7) return;
+      moving = true; dragged.current = true;
+      const under = document.elementsFromPoint(ev.clientX, ev.clientY).map((el) => (el as HTMLElement).closest?.("[data-bd-cell]") as HTMLElement | null)
+        .find((el) => el && el.dataset.bdCell !== b.id) || null;
+      const over = under ? Number(under.dataset.bdIndex) : null;
+      setDrag({ id: b.id, dx, dy, over: Number.isFinite(over as number) ? over : null });
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+      setDrag((d) => {
+        if (d && d.over != null && d.over !== index) studio.onMove?.(b.id, d.over);
+        return null;
+      });
+      setTimeout(() => { dragged.current = false; }, 0);
+    };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+  };
+  const startResize = (e: React.PointerEvent, b: Block, cell: HTMLElement) => {
+    e.preventDefault(); e.stopPropagation();
+    const grid = gridRef.current;
+    if (!grid || !studio?.onResize) return;
+    const gw = grid.getBoundingClientRect().width;
+    const col = (gw + 14) / 12;
+    const r = cell.getBoundingClientRect();
+    const rowH = r.height / Math.max(b.h || 1, 1);
+    const x0 = e.clientX, y0 = e.clientY;
+    let cur = { span: b.span, h: b.h || 1 };
+    const move = (ev: PointerEvent) => {
+      const span = Math.max(2, Math.min(12, Math.round((r.width + 14 + ev.clientX - x0) / col)));
+      const h = Math.max(1, Math.min(4, Math.round((r.height + ev.clientY - y0) / Math.max(rowH, 120))));
+      cur = { span, h };
+      setSize({ id: b.id, span, h });
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+      setSize(null);
+      if (cur.span !== b.span || cur.h !== (b.h || 1)) studio.onResize?.(b.id, cur.span, cur.h);
+    };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+  };
+
+  // R67: a real picture of the dashboard for its card on the Dashboards list - drawn once the first page settles
+  const snapped = useRef(false);
+  useEffect(() => {
+    if (snapped.current || !studio?.onSnapshot || !run || loading || !sum || page !== sum.pages[0]?.id || !run.blocks.length) return;
+    const t = setTimeout(() => {
+      const el = (gridRef.current?.parentElement as HTMLElement | null) || rootRef.current;
+      if (el && !snapped.current) { snapped.current = true; studio.onSnapshot?.(el); }
+    }, 3500);
+    return () => clearTimeout(t);
+  }, [run, loading, page, sum]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const setF = (k: string, v: string) => setFilters((f) => { const n = { ...f }; if (!v || v === "All") delete n[k]; else n[k] = v; return n; });
   const onPick = (kind: string, label: string) => {
@@ -290,17 +420,19 @@ export function BoardView({ id, embedded = false, version = 0, onAsk, studio }: 
   if (err && !sum) return <div className="bd bd-err" data-bd-error="">{err}</div>;
   if (!sum) return <div className="bd bd-loading"><span className="bd-spin" /> Opening the dashboard…</div>;
   return (
-    <div className={`bd ${sum.palette.mode}${embedded ? " embedded" : ""}${studio ? " studio" : ""}`} style={style} data-bd-board={id} data-bd-theme={sum.theme}
+    <div ref={rootRef} className={`bd ${dark ? "dark" : "light"}${embedded ? " embedded" : ""}${studio ? " studio" : ""}${publicView ? " public" : ""}`} style={style} data-bd-board={id} data-bd-theme={sum.theme}
       onClick={studio ? (e) => { if (!(e.target as HTMLElement).closest(".bd-cell, .sd-float, .sd-menu")) studio.onSelect(null); } : undefined}>
       {studio && (
         <div className="bd-sbar" data-bd-studio-bar="">
-          {sum.pages.length > 1 && (
-            <nav className="bd-segs" role="tablist" aria-label="Pages">
-              {sum.pages.map((p) => (
-                <button key={p.id} type="button" role="tab" aria-selected={p.id === page} className={p.id === page ? "on" : ""} onClick={() => setPage(p.id)} data-bd-tab={p.id}>{p.name}</button>
-              ))}
-            </nav>
-          )}
+          <nav className="bd-segs" role="tablist" aria-label="Pages">
+            {sum.pages.map((p) => (
+              <button key={p.id} type="button" role="tab" aria-selected={p.id === page} className={p.id === page ? "on" : ""} onClick={() => setPage(p.id)}
+                onDoubleClick={studio.editable && studio.onPageMenu ? () => studio.onPageMenu?.(p.id, "rename") : undefined}
+                onContextMenu={studio.editable && studio.onPageMenu ? (e) => { e.preventDefault(); studio.onPageMenu?.(p.id, "rename"); } : undefined}
+                title={studio.editable ? "Double-click to rename" : undefined} data-bd-tab={p.id}>{p.name}</button>
+            ))}
+            {studio.editable && studio.onAddPage && <button type="button" className="bd-addpage" onClick={() => studio.onAddPage?.()} aria-label="Add a page" title="Add a page" data-bd-add-page="">+ Page</button>}
+          </nav>
           {page !== "home" && sum.filters.map((f) => (
             <label key={f.key} className={`bd-pill${filters[f.key] ? " on" : ""}`}>
               <span className="k">{f.label}</span>
@@ -311,7 +443,8 @@ export function BoardView({ id, embedded = false, version = 0, onAsk, studio }: 
             </label>
           ))}
           {page !== "home" && nActive > 0 && <button type="button" className="bd-reset" onClick={() => setFilters({})} data-bd-reset="">Reset</button>}
-          <span className="bd-scope">{run ? `Data as of ${new Date(run.refreshed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })} · ${sum.source?.name || ""}${page !== "home" ? ` · ${run.rows_in_view.toLocaleString()} of ${run.rows_total.toLocaleString()} ${sum.entities}` : ""}` : ""}</span>
+          <SourceChip sum={sum} run={run} />
+          <span className="bd-scope">{run ? `Computed ${new Date(run.refreshed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}${page !== "home" ? ` · ${run.rows_in_view.toLocaleString()} of ${run.rows_total.toLocaleString()} ${sum.entities} in view` : ""}` : ""}</span>
           {studio.right}
         </div>
       )}
@@ -320,6 +453,7 @@ export function BoardView({ id, embedded = false, version = 0, onAsk, studio }: 
           <span className="mk" aria-hidden="true"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M4 18l5-6 4 3 7-8" /></svg></span>
           <span className="nm">{sum.title}</span>
           <span className="bd-live"><i />Live{run ? ` · ${ago(run.refreshed_at)}` : ""}</span>
+          <SourceChip sum={sum} run={run} />
         </div>
         <nav className="bd-tabs" role="tablist" aria-label="Pages">
           {sum.pages.map((p) => (
@@ -327,7 +461,7 @@ export function BoardView({ id, embedded = false, version = 0, onAsk, studio }: 
           ))}
         </nav>
         <div className="bd-actions">
-          <span style={{ position: "relative" }}>
+          {!publicView && <span style={{ position: "relative" }}>
             <button type="button" className="bd-btn" onClick={() => setMenu((m) => !m)} aria-expanded={menu} data-bd-download="">{busy ? "Building…" : "Download"}</button>
             {menu && (
               <div className="bd-menu" role="menu" data-bd-download-menu="">
@@ -336,8 +470,8 @@ export function BoardView({ id, embedded = false, version = 0, onAsk, studio }: 
                 <span className="foot">Downloads keep the filters you have set.</span>
               </div>
             )}
-          </span>
-          {!embedded && sum.conversation_id && <a className="bd-btn" href={`/chat/${sum.conversation_id}`}>Open conversation</a>}
+          </span>}
+          {!embedded && !publicView && sum.conversation_id && <a className="bd-btn" href={`/chat/${sum.conversation_id}`}>Open conversation</a>}
           {embedded && <a className="bd-btn" href={`/boards/${id}`} target="_blank" rel="noreferrer" title="Open full screen">Full screen</a>}
         </div>
       </header>}
@@ -363,22 +497,39 @@ export function BoardView({ id, embedded = false, version = 0, onAsk, studio }: 
         {run?.home && page === "home" && <Home h={run.home} sum={sum} onOpen={setPage} />}
         {page !== "home" && run && run.page.id === page && (
           run.empty ? <div className="bd-card bd-muted" style={{ padding: 40, textAlign: "center" }}>{run.empty} <button type="button" className="bd-reset" onClick={() => setFilters({})}>Reset filters</button></div> : (
-            <div className={`bd-grid${loading ? " dim" : ""}`} data-bd-page={page}>
-              {run.blocks.map((b) => {
+            run.blocks.length === 0 ? (
+              <div className="bd-emptypage" data-bd-empty-page="">
+                <b>This page is empty</b>
+                <span>{studio?.editable ? "Add a chart or a note from the toolbar above (Add chart · Text), or ask for one in the conversation." : "Nothing on this page yet."}</span>
+              </div>
+            ) : (
+            <div ref={gridRef} className={`bd-grid${loading ? " dim" : ""}${drag ? " dragging" : ""}`} data-bd-page={page}>
+              {run.blocks.map((b, index) => {
                 const sel = studio?.selected === b.id;
                 const ch = studio && fresh(studio.changed[b.id]);
+                const sz = size && size.id === b.id ? size : null;
+                const span = sz ? sz.span : b.span, h = sz ? sz.h : b.h;
+                const moving = drag?.id === b.id;
                 return (
-                  <div key={b.id} className={`bd-cell${sel ? " sel" : ""}${ch ? " changed" : ""}${studio?.editable ? " pick" : ""}`} style={{ gridColumn: `span ${b.span}`, gridRow: b.h > 1 ? `span ${b.h}` : undefined }}
-                    data-bd-cell={b.id}
-                    onClick={studio?.editable ? (e) => { if ((e.target as HTMLElement).closest(".sd-float, select, a")) return; studio.onSelect(sel ? null : b); } : undefined}>
+                  <div key={b.id} className={`bd-cell${sel ? " sel" : ""}${ch ? " changed" : ""}${studio?.editable ? " pick" : ""}${moving ? " moving" : ""}${drag && drag.over === index ? " drop" : ""}${sz ? " sizing" : ""}`}
+                    style={{ gridColumn: `span ${span}`, gridRow: h > 1 ? `span ${h}` : undefined, ...(moving ? { transform: `translate(${drag!.dx}px, ${drag!.dy}px)` } : {}) }}
+                    data-bd-cell={b.id} data-bd-index={index}
+                    onPointerDown={studio?.editable ? (e) => startDrag(e, b, index) : undefined}
+                    onClick={studio?.editable ? (e) => { if (dragged.current || (e.target as HTMLElement).closest(".sd-float, select, a, .sd-handle, .bd-cmt")) return; studio.onSelect(sel ? null : b); } : undefined}>
                     {ch && <span className="bd-changed" data-bd-changed="">Changed just now</span>}
-                    <BlockView b={b} onPick={onPick} verb={sum.outcome?.verb || "had the outcome"} mode={sum.palette.mode} />
+                    <BlockView b={{ ...b, span, h }} onPick={onPick} verb={sum.outcome?.verb || "had the outcome"} mode={dark ? "dark" : "light"} />
+                    {studio?.blockExtra && <span className="bd-cmt">{studio.blockExtra(b)}</span>}
                     {sel && studio?.float && studio.float(b)}
-                    {sel && <><i className="sd-handle" style={{ left: -6, top: -6 }} /><i className="sd-handle" style={{ right: -6, bottom: -6 }} /></>}
+                    {studio?.editable && studio.onResize && (
+                      <i className="sd-handle sd-resize" title="Drag to resize" aria-label="Resize" data-bd-resize={b.id}
+                        onPointerDown={(e) => startResize(e, b, (e.currentTarget.parentElement as HTMLElement))} />
+                    )}
+                    {sz && <span className="bd-sizetag">{span} / 12 · {h} {h === 1 ? "row" : "rows"}</span>}
                   </div>
                 );
               })}
             </div>
+            )
           )
         )}
         {(!run || (page !== "home" && run.page.id !== page)) && (

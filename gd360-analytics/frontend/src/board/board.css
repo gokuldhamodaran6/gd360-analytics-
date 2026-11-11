@@ -244,9 +244,9 @@ button.bd-chip { cursor: pointer; }
 /* the Studio theme keeps the hero tile white, like every other card - the accent is in its curve and number */
 .bd[data-bd-theme="studio"] .bd-kpi.hero { background: var(--bd-card); border-color: color-mix(in srgb, var(--bd-ink) 10%, transparent); color: var(--bd-ink); --bd-ink: #121514; --bd-muted: #6E7472; }
 .bd[data-bd-theme="studio"] .bd-kpi.hero .bd-chip { background: color-mix(in srgb, var(--bd-ink) 6%, transparent); }
-.bd[data-bd-theme="studio"] .bd-kpi.hero .bd-hc { --bd-accent: #2F6FE4; --bd-faint: rgb(47 111 228 / .25); }
+.bd[data-bd-theme="studio"] .bd-kpi.hero .bd-hc { --bd-accent: var(--bd-brand, #2F6FE4); --bd-faint: color-mix(in srgb, var(--bd-brand, #2F6FE4) 25%, transparent); }
 .bd[data-bd-theme="studio"] .bd-kpi.hero .bd-chart .grid { stroke: rgb(18 21 20 / .08); }
-.bd[data-bd-theme="studio"] .bd-kpi.hero .bd-chart .dot { fill: #2F6FE4; stroke: #fff; }
+.bd[data-bd-theme="studio"] .bd-kpi.hero .bd-chart .dot { fill: var(--bd-brand, #2F6FE4); stroke: var(--bd-card); }
 .bd[data-bd-theme="studio"] .bd-kpi.hero .bd-kv .v { font-family: "Geist Mono", ui-monospace, monospace; font-size: 52px; letter-spacing: -0.02em; }
 .bd.studio .bd-grid { grid-auto-flow: row dense; }
 /* R56 phone pass: the page segments scroll on their own row instead of pushing the page sideways */
@@ -257,3 +257,47 @@ button.bd-chip { cursor: pointer; }
 /* R66: the live street map inside a designed dashboard */
 .bd-map { display: flex; flex-direction: column; gap: 10px; }
 .bd-map .eu-map { border-radius: 12px; overflow: hidden; flex: 1; }
+
+/* ---- R67: editing like a design tool - drag to move, drag the corner to resize ---------------------------- */
+.bd.studio .bd-cell.pick { cursor: grab; touch-action: none; }
+.bd.studio .bd-grid.dragging .bd-cell { transition: transform .12s ease, opacity .12s; }
+.bd .bd-cell.moving { z-index: 30; cursor: grabbing; opacity: .92; transition: none !important; }
+.bd .bd-cell.moving > .bd-card, .bd .bd-cell.moving > .bd-tint > .bd-card { box-shadow: 0 24px 60px -18px rgba(0, 0, 0, .35); }
+.bd .bd-cell.drop::before { content: ""; position: absolute; inset: -7px; border: 2px dashed var(--bd-accent); border-radius: 24px; pointer-events: none; z-index: 2; }
+.bd .bd-cell.sizing > .bd-card, .bd .bd-cell.sizing > .bd-tint > .bd-card { outline: 2px solid var(--bd-accent); outline-offset: 3px; }
+.bd .sd-resize { position: absolute; right: -5px; bottom: -5px; width: 16px; height: 16px; border-radius: 5px; cursor: nwse-resize; z-index: 5;
+  background: var(--bd-card); border: 2px solid var(--bd-accent); opacity: 0; transition: opacity .15s; }
+.bd .bd-cell:hover > .sd-resize, .bd .bd-cell.sel > .sd-resize, .bd .bd-cell.sizing > .sd-resize { opacity: 1; }
+.bd .bd-sizetag { position: absolute; right: 18px; bottom: 14px; z-index: 6; padding: 4px 9px; border-radius: 8px; font: 600 11.5px "Geist Mono", ui-monospace, monospace;
+  background: var(--bd-accent); color: #fff; pointer-events: none; }
+.bd .bd-tint { display: flex; flex: 1; min-width: 0; }
+.bd .bd-tint > * { flex: 1; }
+.bd .bd-cmt { position: absolute; bottom: 12px; right: 26px; z-index: 4; }
+.bd .bd-emptypage { display: flex; flex-direction: column; gap: 6px; align-items: center; justify-content: center; padding: 72px 24px; border: 1.5px dashed color-mix(in srgb, var(--bd-ink) 18%, transparent);
+  border-radius: 20px; color: color-mix(in srgb, var(--bd-ink) 60%, transparent); text-align: center; }
+.bd .bd-emptypage b { color: var(--bd-ink); font-size: 15px; }
+.bd .bd-addpage { border: 1px dashed color-mix(in srgb, var(--bd-ink) 25%, transparent) !important; color: color-mix(in srgb, var(--bd-ink) 70%, transparent) !important; background: transparent !important; }
+.bd .bd-addpage:hover { color: var(--bd-accent) !important; border-color: var(--bd-accent) !important; }
+
+/* the data a dashboard was built from */
+.bd .bd-src { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px; border-radius: 15px; font-size: 12.5px; white-space: nowrap; max-width: 520px; overflow: hidden;
+  background: var(--bd-card); border: 1px solid color-mix(in srgb, var(--bd-ink) 12%, transparent); color: color-mix(in srgb, var(--bd-ink) 75%, transparent); text-decoration: none; }
+.bd .bd-src svg { color: var(--bd-accent); flex: none; }
+.bd .bd-src .k { font: 600 10.5px "Geist Mono", ui-monospace, monospace; letter-spacing: .06em; text-transform: uppercase; color: color-mix(in srgb, var(--bd-ink) 50%, transparent); }
+.bd .bd-src b { color: var(--bd-ink); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.bd .bd-src .t { padding-left: 7px; border-left: 1px solid color-mix(in srgb, var(--bd-ink) 14%, transparent); }
+.bd a.bd-src:hover { border-color: var(--bd-accent); }
+
+/* donut */
+.bd .bd-donut { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+.bd .bd-donut svg .dv { font: 600 20px "Geist", system-ui, sans-serif; fill: var(--bd-ink); }
+.bd .bd-donut svg .pick { cursor: pointer; }
+.bd .bd-dleg { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 160px; }
+.bd .bd-dleg li { display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: 10px; font-size: 13px; }
+.bd .bd-dleg i { width: 10px; height: 10px; border-radius: 3px; }
+.bd .bd-dleg .v { font-family: "Geist Mono", ui-monospace, monospace; font-size: 12.5px; color: color-mix(in srgb, var(--bd-ink) 70%, transparent); }
+
+/* R67: the Studio theme in the app's dark mode - its white hero tile goes dark like every other card */
+.bd.dark[data-bd-theme="studio"] .bd-kpi.hero { --bd-ink: #EDEDEF; --bd-muted: #9A9CA6; color: #EDEDEF; }
+.bd.dark[data-bd-theme="studio"] .bd-kpi.hero .bd-chart .grid { stroke: rgb(255 255 255 / .08); }
+.bd.dark .bd-changed { background: color-mix(in srgb, var(--bd-accent) 22%, var(--bd-card)); color: var(--bd-ink); }
