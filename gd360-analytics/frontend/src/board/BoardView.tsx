@@ -124,7 +124,7 @@ function MapBlock({ b, mode }: { b: Block; mode: string }) {
   return (
     <div className="bd-card bd-map" data-bd-block={b.kind}>
       <Head b={b} />
-      {(b.rows || []).length ? <LiveMap result={result} block={block as any} minHeight={(b.h || 1) >= 2 ? 440 : 320} theme={mode === "dark" ? "dark" : "light"} />
+      {(b.rows || []).length ? <LiveMap result={result} block={block as any} minHeight={(b.h || 1) >= 2 ? 500 : 340} theme={mode === "dark" ? "dark" : "light"} />
         : <span className="bd-muted">Nothing to place on the map with these filters.</span>}
     </div>
   );
