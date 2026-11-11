@@ -13,7 +13,7 @@ import {
 
 const STARTERS: { name: string; color: string; d: string }[] = [
   { name: "Marketing & Brand", color: "#C9A7FF", d: "Social pages, ads, web and search" },
-  { name: "Sales", color: "#43E5A0", d: "Store, marketplaces, payments, CRM" },
+  { name: "Sales", color: "#3D66FF", d: "Store, marketplaces, payments, CRM" },
   { name: "Finance", color: "#F2B84B", d: "Books, payouts and revenue" },
   { name: "HR & People", color: "#FF8FA3", d: "Headcount, hiring, payroll" },
   { name: "Product & Testing", color: "#7AA7FF", d: "App data, experiments, tickets" },
