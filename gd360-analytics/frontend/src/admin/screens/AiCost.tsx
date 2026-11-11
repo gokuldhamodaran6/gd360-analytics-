@@ -158,8 +158,8 @@ export default function AiCost() {
                   confirm={s.paused ? `Resume ${s.label} for everyone?` : `Pause ${s.label} for everyone?`}
                   done={`${s.label} ${s.paused ? "resumed" : "paused"}`}
                   run={async () => { await mcPut("/kill-switches", { key: s.key, paused: !s.paused }); reload(); }}>
-                  <span aria-hidden="true" style={{ width: 30, height: 18, borderRadius: 18, background: s.paused ? "#FF7A6B" : "#43E5A0", position: "relative", flex: "none" }}>
-                    <span style={{ position: "absolute", top: 2, left: s.paused ? 2 : 14, width: 14, height: 14, borderRadius: 14, background: "#07090A" }} />
+                  <span aria-hidden="true" style={{ width: 30, height: 18, borderRadius: 18, background: s.paused ? "#FF7A6B" : "#3D66FF", position: "relative", flex: "none" }}>
+                    <span style={{ position: "absolute", top: 2, left: s.paused ? 2 : 14, width: 14, height: 14, borderRadius: 14, background: "#0A0A0B" }} />
                   </span>
                   {s.label}
                   <span style={{ fontSize: 11.5, color: s.paused ? "var(--red)" : "var(--ink3)" }}>{s.paused ? "paused" : "on"}</span>

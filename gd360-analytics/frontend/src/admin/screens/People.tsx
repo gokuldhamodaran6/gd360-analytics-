@@ -166,7 +166,7 @@ function PersonDrawer({ id, onClose, onChanged }: { id: string; onClose: () => v
             {data.recent.length === 0 ? <span className="mc-tip">No recorded activity.</span> : data.recent.map((r: any, i: number) => (
               <div key={i} style={{ display: "flex", gap: 10, fontSize: 13 }}>
                 <span className="mc-mono" style={{ fontSize: 11, color: "var(--ink3)", width: 64, flex: "none", paddingTop: 2 }}>{ago(r.t)}</span>
-                <span style={{ color: "#D5DEDB" }}>{r.text}</span>
+                <span style={{ color: "#D4D5DB" }}>{r.text}</span>
               </div>
             ))}
           </Section>
@@ -175,7 +175,7 @@ function PersonDrawer({ id, onClose, onChanged }: { id: string; onClose: () => v
             {data.staff_actions.length === 0 ? <span className="mc-tip">No staff actions on this person.</span> : data.staff_actions.map((r: any, i: number) => (
               <div key={i} style={{ display: "flex", gap: 10, fontSize: 13 }}>
                 <span className="mc-mono" style={{ fontSize: 11, color: "var(--ink3)", width: 64, flex: "none", paddingTop: 2 }}>{ago(r.t)}</span>
-                <span style={{ color: "#D5DEDB", overflowWrap: "anywhere" }}>{r.text}</span>
+                <span style={{ color: "#D4D5DB", overflowWrap: "anywhere" }}>{r.text}</span>
               </div>
             ))}
           </Section>

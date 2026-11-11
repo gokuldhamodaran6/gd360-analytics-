@@ -53,7 +53,7 @@ function Funnel({ steps }: { steps: { k: string; n: number }[] }) {
       <div style={{ display: "grid", gridTemplateColumns: `repeat(${steps.length}, minmax(0,1fr))`, gap: 8 }}>
         {steps.map((s) => <span key={s.k} style={{ fontSize: 12, color: "var(--ink2)", lineHeight: 1.35 }}>{s.k}</span>)}
       </div>
-      <span style={{ fontSize: 13.5, color: "#D5DEDB", lineHeight: 1.5 }}>
+      <span style={{ fontSize: 13.5, color: "#D4D5DB", lineHeight: 1.5 }}>
         {worst > 0
           ? <>Biggest drop: <b>{steps[worst - 1].k.toLowerCase()} → {steps[worst].k.toLowerCase()}</b> — <b style={{ color: "var(--amber)" }}>{Math.round(worstDrop * 100)}%</b> of people stop here. Fix this step first.</>
           : "No drop-off between steps in this cohort."}
@@ -84,8 +84,8 @@ function Heat({ rows }: { rows: any[] }) {
                 return (
                   <td key={i} title={show ? `${weekLabel(r.week)} cohort · week ${i}: ${v}% active` : undefined}
                     style={{ height: 30, minWidth: 44, borderRadius: 6, textAlign: "center", fontFamily: "Geist Mono, monospace", fontVariantNumeric: "tabular-nums",
-                      background: show ? `rgba(67,229,160,${(0.06 + (v / 100) * 0.84).toFixed(2)})` : "transparent",
-                      color: show ? (v > 45 ? "#04140D" : "var(--ink)") : "var(--ink4)", fontWeight: show && v > 45 ? 700 : 500,
+                      background: show ? `rgba(61,102,255,${(0.06 + (v / 100) * 0.84).toFixed(2)})` : "transparent",
+                      color: show ? (v > 45 ? "#FFFFFF" : "var(--ink)") : "var(--ink4)", fontWeight: show && v > 45 ? 700 : 500,
                       border: show ? "none" : "1px solid var(--line0)" }}>
                     {show ? `${v}%` : ""}
                   </td>

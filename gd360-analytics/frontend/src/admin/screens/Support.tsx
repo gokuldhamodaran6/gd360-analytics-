@@ -65,7 +65,7 @@ function Msg({ m }: { m: any }) {
         <span style={{ fontSize: 12.5, fontWeight: 700 }}><span className="mc-lbl" style={{ color: st.c, marginRight: 8 }}>{st.label}</span>{m.author || "—"}</span>
         <span className="mc-mono" style={{ fontSize: 11, color: "var(--ink3)" }}>{dateTime(m.t)}</span>
       </div>
-      <span style={{ fontSize: 13.5, lineHeight: 1.55, whiteSpace: "pre-wrap", color: "#D5DEDB" }}>{m.body}</span>
+      <span style={{ fontSize: 13.5, lineHeight: 1.55, whiteSpace: "pre-wrap", color: "#D4D5DB" }}>{m.body}</span>
     </div>
   );
 }

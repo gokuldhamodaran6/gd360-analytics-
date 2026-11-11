@@ -9,7 +9,7 @@ import {
 
 type View = "pipeline" | "leads" | "pql";
 const NO = "Your role can't do this";
-const STAGE_COLOR: Record<string, string> = { new: "#4B5A57", qualified: "#7AA7FF", demo: "#7AA7FF", proposal: "#F2B84B", won: "#43E5A0", lost: "#FF7A6B" };
+const STAGE_COLOR: Record<string, string> = { new: "#4B4D56", qualified: "#7AA7FF", demo: "#7AA7FF", proposal: "#F2B84B", won: "#3D66FF", lost: "#FF7A6B" };
 const NEXT: Record<string, string> = { new: "qualified", qualified: "demo", demo: "proposal", proposal: "won" };
 const OPEN_STAGES: [string, string][] = [["new", "New lead"], ["qualified", "Qualified"], ["demo", "Demo done"], ["proposal", "Proposal"]];
 const LEAD_STATUS = ["new", "contacted", "qualified", "closed"];
@@ -96,7 +96,7 @@ function DealPanel({ id, stages, onChanged }: { id: string; stages: Record<strin
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         <span className="mc-lbl">NEXT STEP</span>
-        <span style={{ fontSize: 13.5, lineHeight: 1.5, color: "#D5DEDB" }}>{d.next_step || "No next step set."}</span>
+        <span style={{ fontSize: 13.5, lineHeight: 1.5, color: "#D4D5DB" }}>{d.next_step || "No next step set."}</span>
       </div>
       {d.stage === "lost" && d.lost_reason && <div className="mc-err">Lost: {d.lost_reason}</div>}
 
@@ -146,9 +146,9 @@ function DealPanel({ id, stages, onChanged }: { id: string; stages: Record<strin
         {data.activities.length === 0 && <Empty>Nothing logged yet.</Empty>}
         {data.activities.map((a: any) => (
           <div key={a.id} style={{ display: "flex", gap: 10, fontSize: 13, lineHeight: 1.45 }}>
-            <span className="mc-dot" style={{ background: a.kind === "stage" ? "#7AA7FF" : "#43E5A0", width: 8, height: 8 }} />
+            <span className="mc-dot" style={{ background: a.kind === "stage" ? "#7AA7FF" : "#3D66FF", width: 8, height: 8 }} />
             <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
-              <span style={{ color: "#D5DEDB", whiteSpace: "pre-wrap" }}>{a.body}</span>
+              <span style={{ color: "#D4D5DB", whiteSpace: "pre-wrap" }}>{a.body}</span>
               <span className="mc-mono" style={{ fontSize: 11, color: "var(--ink3)" }}>{a.kind} · {who(a.by)} · {dateTime(a.t)}</span>
             </div>
           </div>
@@ -200,7 +200,7 @@ function Leads({ leads, onChanged, openDeal }: { leads: any[]; onChanged: () => 
                   <td><div style={{ display: "flex", flexDirection: "column", gap: 2 }}><b>{l.name || "—"}</b><span className="mc-tip">{l.email}</span></div></td>
                   <td>{l.company || "—"}</td>
                   <td style={{ whiteSpace: "nowrap" }}>{l.team_size || "—"}</td>
-                  <td style={{ maxWidth: 260, color: "#D5DEDB", lineHeight: 1.45 }}>{l.question || "—"}</td>
+                  <td style={{ maxWidth: 260, color: "#D4D5DB", lineHeight: 1.45 }}>{l.question || "—"}</td>
                   <td>
                     <button type="button" className="mc-rowbtn" title={l.why.join("\n")} aria-expanded={expand === l.id} onClick={() => setExpand(expand === l.id ? null : l.id)}>
                       <Pill tone={scoreTone(l.score)}>{l.score}</Pill>
@@ -346,7 +346,7 @@ export default function Crm() {
                   <div key={r.owner} style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
                     <span style={{ width: 150, fontWeight: 700, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis" }} title={r.owner}>{who(r.owner === "Unassigned" ? null : r.owner)}</span>
                     <div style={{ flex: "1 1 300px", position: "relative", height: 22, borderRadius: 6, background: "var(--line0)" }} title={`commit ${fmtUSD(r.commit)} · best case ${fmtUSD(r.best)}`}>
-                      <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, borderRadius: 6, width: `${(r.best / repMax) * 100}%`, background: "rgba(67,229,160,.25)" }} />
+                      <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, borderRadius: 6, width: `${(r.best / repMax) * 100}%`, background: "rgba(61,102,255,.25)" }} />
                       <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, borderRadius: 6, width: `${(r.commit / repMax) * 100}%`, background: "var(--g)" }} />
                     </div>
                     <span className="mc-mono mc-num" style={{ fontSize: 12.5, color: "var(--ink2)" }}>commit {k$(r.commit)} · best case {k$(r.best)} · won {k$(r.won)}</span>

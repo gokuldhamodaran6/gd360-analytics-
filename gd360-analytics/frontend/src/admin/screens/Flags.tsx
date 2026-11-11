@@ -17,8 +17,8 @@ function Toggle({ on, label, disabled, title, onToggle }: { on: boolean; label: 
         try { await onToggle(!on); } catch (e) { toast(errText(e, "That didn't work."), true); } finally { setBusy(false); }
       }}
       style={{ width: 44, height: 26, borderRadius: 26, border: 0, cursor: disabled ? "not-allowed" : "pointer", position: "relative", flex: "none",
-        background: on ? "#43E5A0" : "#2A3436", opacity: disabled ? 0.45 : busy ? 0.7 : 1 }}>
-      <span style={{ position: "absolute", top: 4, left: on ? 22 : 4, width: 18, height: 18, borderRadius: 18, background: "#07090A", transition: "left .15s" }} />
+        background: on ? "#3D66FF" : "#2A2B33", opacity: disabled ? 0.45 : busy ? 0.7 : 1 }}>
+      <span style={{ position: "absolute", top: 4, left: on ? 22 : 4, width: 18, height: 18, borderRadius: 18, background: "#0A0A0B", transition: "left .15s" }} />
     </button>
   );
 }
@@ -57,7 +57,7 @@ function FlagRow({ f, segments, canEdit, reload }: { f: any; segments: any[]; ca
       <td style={{ minWidth: 190 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <input type="range" min={0} max={100} step={5} value={pct} disabled={!canEdit} title={t} aria-label={`Rollout for ${f.name}`}
-            style={{ accentColor: "#43E5A0", width: "100%" }}
+            style={{ accentColor: "#3D66FF", width: "100%" }}
             onChange={(e) => setPct(Number(e.target.value))} onPointerUp={commitPct} onKeyUp={commitPct} onBlur={commitPct} />
           <span className="mc-mono mc-num" style={{ width: 40, textAlign: "right" }}>{pct}%</span>
         </div>
@@ -115,16 +115,16 @@ function Preview({ kind, title, body, cta }: { kind: "banner" | "modal"; title: 
   const T = title.trim() || "Your headline";
   const B = body.trim();
   const ctaPill = cta.trim() && (
-    <span style={{ alignSelf: kind === "modal" ? "flex-start" : undefined, height: 30, padding: "0 12px", borderRadius: 999, background: "#43E5A0", color: "#04140D", fontSize: 12.5, fontWeight: 700, display: "inline-flex", alignItems: "center", flex: "none" }}>{cta.trim()}</span>
+    <span style={{ alignSelf: kind === "modal" ? "flex-start" : undefined, height: 30, padding: "0 12px", borderRadius: 999, background: "#3D66FF", color: "#FFFFFF", fontSize: 12.5, fontWeight: 700, display: "inline-flex", alignItems: "center", flex: "none" }}>{cta.trim()}</span>
   );
   return (
-    <div style={{ border: "1px solid var(--line)", borderRadius: 16, overflow: "hidden", background: "#07090A" }} aria-label="Preview">
+    <div style={{ border: "1px solid var(--line)", borderRadius: 16, overflow: "hidden", background: "#0A0A0B" }} aria-label="Preview">
       <div style={{ height: 30, display: "flex", alignItems: "center", gap: 6, padding: "0 12px", borderBottom: "1px solid var(--line0)" }}>
-        {[0, 1, 2].map((i) => <span key={i} style={{ width: 9, height: 9, borderRadius: 9, background: "#2A3436" }} />)}
+        {[0, 1, 2].map((i) => <span key={i} style={{ width: 9, height: 9, borderRadius: 9, background: "#2A2B33" }} />)}
         <span className="mc-mono" style={{ marginLeft: 8, fontSize: 11, color: "var(--ink3)" }}>Euliv · Home</span>
       </div>
       {kind === "banner" && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", padding: "12px 14px", background: "#132320", borderBottom: "1px solid #24413A" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", padding: "12px 14px", background: "#121628", borderBottom: "1px solid #2B3566" }}>
           <span style={{ flex: "1 1 220px", fontSize: 13, lineHeight: 1.45 }}><b>{T}</b>{B ? ` ${B}` : ""}</span>
           {ctaPill}
           <span aria-hidden="true" style={{ color: "var(--ink3)", fontSize: 15 }}>×</span>
@@ -138,8 +138,8 @@ function Preview({ kind, title, body, cta }: { kind: "banner" | "modal"; title: 
           <div style={{ height: 60, flex: 1, borderRadius: 12, background: "var(--s1)" }} />
         </div>
         {kind === "modal" && (
-          <div style={{ position: "absolute", inset: 0, background: "rgba(3,5,6,.7)", display: "grid", placeItems: "center", padding: 16 }}>
-            <div style={{ maxWidth: 320, width: "100%", padding: 18, borderRadius: 16, border: "1px solid #24413A", background: "#0B0F10", display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ position: "absolute", inset: 0, background: "rgba(3,3,4,.7)", display: "grid", placeItems: "center", padding: 16 }}>
+            <div style={{ maxWidth: 320, width: "100%", padding: 18, borderRadius: 16, border: "1px solid #2B3566", background: "#0C0C0E", display: "flex", flexDirection: "column", gap: 8 }}>
               <span style={{ fontWeight: 800, fontSize: 16 }}>{T}</span>
               {B && <span style={{ fontSize: 13, color: "var(--ink2)", lineHeight: 1.5 }}>{B}</span>}
               {ctaPill}

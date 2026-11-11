@@ -104,7 +104,7 @@ function GoalsEditor({ goals, onSaved }: { goals: any[]; onSaved: () => void }) 
   );
 }
 
-const FEED_COLOR: Record<string, string> = { signup: "#7AA7FF", source: "#43E5A0", publish: "#43E5A0", demo: "#F2B84B" };
+const FEED_COLOR: Record<string, string> = { signup: "#7AA7FF", source: "#3D66FF", publish: "#3D66FF", demo: "#F2B84B" };
 
 export default function Overview() {
   const [range, setRange] = useState<"7d" | "30d" | "90d">("30d");
@@ -161,8 +161,8 @@ export default function Overview() {
             </Card>
             <Card title="SIGN-UPS AND ACTIVE PEOPLE PER DAY">
               <LineChart label="Sign-ups per day" color="#7AA7FF" height={95} points={series.map((s: any) => ({ label: lbl(s.date), value: s.signups }))} />
-              <LineChart label="Active people per day" color="#43E5A0" height={95} points={series.map((s: any) => ({ label: lbl(s.date), value: s.active }))} />
-              <span className="mc-tip"><b style={{ color: "#7AA7FF" }}>Blue</b> sign-ups · <b style={{ color: "#43E5A0" }}>green</b> people who asked at least one question</span>
+              <LineChart label="Active people per day" color="#3D66FF" height={95} points={series.map((s: any) => ({ label: lbl(s.date), value: s.active }))} />
+              <span className="mc-tip"><b style={{ color: "#7AA7FF" }}>Blue</b> sign-ups · <b style={{ color: "#3D66FF" }}>green</b> people who asked at least one question</span>
             </Card>
           </div>
 
@@ -188,8 +188,8 @@ export default function Overview() {
               {data.feed.map((f: any, i: number) => (
                 <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, lineHeight: 1.45 }}>
                   <span className="mc-mono" style={{ fontSize: 11, color: "var(--ink3)", width: 58, flex: "none", paddingTop: 2 }}>{ago(f.t)}</span>
-                  <span className="mc-dot" style={{ background: FEED_COLOR[f.kind] || "#7F8C88", width: 8, height: 8 }} />
-                  <span style={{ color: "#D5DEDB" }}>{f.text}</span>
+                  <span className="mc-dot" style={{ background: FEED_COLOR[f.kind] || "#8E909A", width: 8, height: 8 }} />
+                  <span style={{ color: "#D4D5DB" }}>{f.text}</span>
                 </div>
               ))}
             </Card>
@@ -209,7 +209,7 @@ export default function Overview() {
                         <td className="mc-mono mc-num">{fmtN(a.chats_30d)}</td>
                         <td><Pill tone={bandTone(a.band)}>{a.health} · {a.band}</Pill></td>
                         <td>{a.fit}</td>
-                        <td style={{ color: "#D5DEDB" }}>{a.signal}</td>
+                        <td style={{ color: "#D4D5DB" }}>{a.signal}</td>
                         <td style={{ color: a.tone === "risk" ? "var(--red)" : "var(--g)", fontWeight: 600 }}>{a.action}</td>
                       </tr>
                     ))}

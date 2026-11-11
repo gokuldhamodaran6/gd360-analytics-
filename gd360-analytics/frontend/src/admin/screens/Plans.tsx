@@ -7,7 +7,7 @@ import {
 } from "../ui";
 
 const NO = "Your role can't do this";
-const PLAN_INK: Record<string, string> = { "Early access": "#BDF3DA", Plus: "#F2B84B", Team: "#7AA7FF", Business: "#43E5A0", Enterprise: "#E8EEEC" };
+const PLAN_INK: Record<string, string> = { "Early access": "#C9D4FF", Plus: "#F2B84B", Team: "#7AA7FF", Business: "#3D66FF", Enterprise: "#EDEDEF" };
 const PAID = ["Plus", "Team", "Business", "Enterprise"];
 const IMPACT_KEYS = ["chats.per_user_month", "sources.max", "automations.max", "ml.models", "seats.min_max"];
 const STATUS_TONE: Record<string, "g" | "a" | "r" | undefined> = { active: "g", pending: "a", revoked: "r" };
@@ -341,7 +341,7 @@ export default function Plans() {
                         <td style={{ fontWeight: 700 }}>{o.workspace}</td>
                         <td><div style={{ display: "flex", flexDirection: "column", gap: 2 }}><span>{keyLabel(o.key)}</span><span className="mc-mono" style={{ fontSize: 11, color: "var(--ink3)" }}>{o.key}</span></div></td>
                         <td className="mc-mono mc-num" style={{ color: "var(--g)", fontWeight: 700 }}>{o.value}</td>
-                        <td style={{ color: "#D5DEDB", maxWidth: 240, lineHeight: 1.45 }}>{o.reason}</td>
+                        <td style={{ color: "#D4D5DB", maxWidth: 240, lineHeight: 1.45 }}>{o.reason}</td>
                         <td><div style={{ display: "flex", flexDirection: "column", gap: 2 }}><span style={{ fontSize: 12.5 }}>{o.requested_by}</span><span className="mc-tip">{ago(o.created_at)}{o.approved_by ? ` · approved by ${o.approved_by}` : ""}</span></div></td>
                         <td className="mc-mono" style={{ fontSize: 12 }}>{dateShort(o.expires_at)}</td>
                         <td><Pill tone={STATUS_TONE[o.status]}>{o.status}</Pill></td>
@@ -384,7 +384,7 @@ export default function Plans() {
           {data.history.length === 0 ? <Empty>No plan changes yet. Edits to the matrix, prices and overrides show up here.</Empty> : data.history.map((h: any, i: number) => (
             <div key={i} style={{ display: "flex", gap: 10, fontSize: 13, lineHeight: 1.45 }}>
               <span className="mc-mono" style={{ fontSize: 11, color: "var(--ink3)", width: 64, flex: "none", paddingTop: 2 }}>{ago(h.t)}</span>
-              <span style={{ color: "#D5DEDB" }}>{h.text} <span style={{ color: "var(--ink3)" }}>· {h.by}</span></span>
+              <span style={{ color: "#D4D5DB" }}>{h.text} <span style={{ color: "var(--ink3)" }}>· {h.by}</span></span>
             </div>
           ))}
         </Card>

@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { useMC } from "../api";
 import { Bar, Card, Chips, Empty, ErrorBox, fmtN, fmtUSD, LineChart, Loading, PageHead, Pill, Seg } from "../ui";
 
-const PLAN_INK: Record<string, string> = { Plus: "#F2B84B", Team: "#7AA7FF", Business: "#43E5A0", Enterprise: "#E8EEEC" };
+const PLAN_INK: Record<string, string> = { Plus: "#F2B84B", Team: "#7AA7FF", Business: "#3D66FF", Enterprise: "#EDEDEF" };
 const DEFAULT_CONV: Record<string, number> = { Plus: 12, Team: 20, Business: 25, Enterprise: 30 };
 const RULES: Record<string, string> = {
   Plus: "One person, ≤ 200 questions a month, ≤ 5 sources.",
@@ -29,7 +29,7 @@ function Slider({ label, value, display, min, max, step, onChange }: { label: st
     <label className="mc-field">
       <span style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>{label} <b className="mc-num mc-mono" style={{ color: "var(--ink)" }}>{display}</b></span>
       <input type="range" min={min} max={max} step={step} value={value} aria-label={label} onChange={(e) => onChange(Number(e.target.value))}
-        style={{ accentColor: "#43E5A0", width: "100%" }} />
+        style={{ accentColor: "#3D66FF", width: "100%" }} />
     </label>
   );
 }

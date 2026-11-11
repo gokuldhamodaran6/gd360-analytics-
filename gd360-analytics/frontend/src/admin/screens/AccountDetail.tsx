@@ -258,7 +258,7 @@ export default function AccountDetail() {
                 <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, lineHeight: 1.45 }}>
                   <span className="mc-mono" style={{ fontSize: 11, color: "var(--ink3)", width: 64, flex: "none", paddingTop: 2 }}>{ago(e.t)}</span>
                   <span className="mc-dot" style={{ background: e.who === "staff" ? "var(--amber)" : "var(--blue)", width: 8, height: 8 }} />
-                  <span style={{ color: "#D5DEDB", flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{e.text}</span>
+                  <span style={{ color: "#D4D5DB", flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{e.text}</span>
                   <Pill tone={e.who === "staff" ? "a" : "b"}>{e.who}</Pill>
                 </div>
               ))}

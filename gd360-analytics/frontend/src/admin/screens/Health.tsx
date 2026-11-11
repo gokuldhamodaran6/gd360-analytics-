@@ -177,7 +177,7 @@ export default function Health() {
                     {i.updates.map((u: any, k: number) => (
                       <div key={k} style={{ display: "flex", gap: 10, fontSize: 13, lineHeight: 1.45, paddingLeft: 8 }}>
                         <span className="mc-mono" style={{ fontSize: 11, color: "var(--ink3)", width: 96, flex: "none", paddingTop: 2 }}>{dateTime(u.t)}</span>
-                        <span style={{ color: "#D5DEDB", minWidth: 0 }}>{u.text} <span className="mc-tip">· {(u.by || "").split("@")[0]}</span></span>
+                        <span style={{ color: "#D4D5DB", minWidth: 0 }}>{u.text} <span className="mc-tip">· {(u.by || "").split("@")[0]}</span></span>
                       </div>
                     ))}
                   </div>

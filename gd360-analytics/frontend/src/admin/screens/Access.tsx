@@ -257,7 +257,7 @@ function MatrixCard() {
                   const has = p.roles.includes(r.key);
                   const on = hl === r.key;
                   return (
-                    <td key={r.key} style={{ textAlign: "center", background: on ? "#0F1A16" : undefined, color: has ? (on ? "var(--g)" : "var(--ink)") : "var(--ink4)", fontWeight: has ? 800 : 400 }}
+                    <td key={r.key} style={{ textAlign: "center", background: on ? "#0E1426" : undefined, color: has ? (on ? "var(--g)" : "var(--ink)") : "var(--ink4)", fontWeight: has ? 800 : 400 }}
                       aria-label={`${r.label}: ${has ? "has" : "doesn't have"} ${p.label}`}>
                       {has ? "✓" : "—"}
                     </td>
@@ -321,7 +321,7 @@ function AuditCard() {
                   <td style={{ fontSize: 12.5, overflowWrap: "anywhere" }}>{e.actor || "—"}</td>
                   <td>
                     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                      <span style={{ color: "#D5DEDB" }}>{e.text}</span>
+                      <span style={{ color: "#D4D5DB" }}>{e.text}</span>
                       <span className="mc-tip"><span className="mc-mono">{e.action}</span>{e.reason ? ` · reason: ${e.reason}` : ""}</span>
                     </div>
                   </td>
