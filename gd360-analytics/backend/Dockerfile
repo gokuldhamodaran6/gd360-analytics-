@@ -13,6 +13,13 @@ COPY . .
 
 RUN mkdir -p /app/uploads
 
+# 2026-11-11 (live maps): the offline place index the live map looks city / country / US-state names up in
+# (app/services/geo.py) - built once here from GeoNames (CC BY 4.0, via geonamescache), ~2.5 MB, then the
+# 190 MB package is removed again so the image only carries the small file.
+RUN pip install --no-cache-dir geonamescache==3.0.2 \
+    && python app/services/geo.py build /opt/euliv-geo/cities.tsv \
+    && pip uninstall -y geonamescache
+
 # 2026-10-05: without this, Python buffers stdout in a Docker container
 # (it isn't a tty), so every print() - including the [chat]/[ai_engine]/
 # [sandbox] diagnostic lines this app leans on throughout to explain a
