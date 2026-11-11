@@ -15,22 +15,29 @@
   correct." No violet, no teal, no second competing hue, no text
   gradients. The point isn't decoration; it's a single mark you learn to
   recognize as GD360's own the way you'd recognize a wax seal.
+
+  2026-11-11 (Midnight & Cobalt, canvas "Euliv dark redesign"): the signature
+  hue is now Euliv Cobalt #2D5BFF on a neutral near-black (#0A0A0B ground,
+  #1E1F24 hairlines, Geist + Geist Mono). Green is kept only for a passed
+  check (--color-good); every brand use (primary, tint, brand-ink, the
+  sequential ramp, the answer kind) is cobalt. Values below were swapped in
+  place; the older comments describe the shapes, not the hues.
 */
 :root {
   /* 2026-10-08 (round 12): the dark theme is "Obsidian" - the look Gokul
      chose for v2 (V2-*.dc.html mockups): near-black ground, quiet
      blue-green greys, and one mint signal colour with dark ink on it. */
-  --color-base: 7 9 10;
-  --color-surface: 14 18 19;
-  --color-surface2: 20 26 27;
-  --color-border: 31 39 41;
-  --color-primary: 67 229 160;
-  --color-on-primary: 4 20 13;
-  --color-accent: 67 229 160;
-  --color-text: 232 238 236;
-  --color-muted: 111 124 120;
-  --glow-1: rgba(67, 229, 160, 0.035);
-  --glow-2: rgba(122, 167, 255, 0.025);
+  --color-base: 10 10 11;
+  --color-surface: 15 15 17;
+  --color-surface2: 22 23 28;
+  --color-border: 30 31 36;
+  --color-primary: 45 91 255;
+  --color-on-primary: 255 255 255;
+  --color-accent: 61 102 255;
+  --color-text: 237 237 239;
+  --color-muted: 107 109 118;
+  --glow-1: rgba(45, 91, 255, 0.06);
+  --glow-2: rgba(110, 143, 255, 0.03);
   --card-alpha: 1;
   /* Tells the browser this page's own UI (including the native parts of
      an <input>/<textarea> it renders, like the text caret and - on some
@@ -46,17 +53,17 @@
 
 :root[data-theme="light"] {
   /* 2026-10-07: #f6f6f3, the brief's page ground (was 250 250 248). */
-  --color-base: 246 246 243;
+  --color-base: 247 247 249;
   --color-surface: 255 255 255;
-  --color-surface2: 244 244 241;
-  --color-border: 227 227 222;
-  --color-primary: 15 92 70;
+  --color-surface2: 243 244 247;
+  --color-border: 226 228 234;
+  --color-primary: 36 76 235;
   --color-on-primary: 255 255 255;
-  --color-accent: 45 130 103;
-  --color-text: 22 22 21;
-  --color-muted: 111 111 106;
-  --glow-1: rgba(15, 92, 70, 0.06);
-  --glow-2: rgba(15, 92, 70, 0.03);
+  --color-accent: 45 91 255;
+  --color-text: 17 18 22;
+  --color-muted: 106 108 118;
+  --glow-1: rgba(36, 76, 235, 0.05);
+  --glow-2: rgba(36, 76, 235, 0.025);
   --card-alpha: 1;
   color-scheme: light;
 }
@@ -75,10 +82,10 @@
      border-strong   hover borders, radius specimens      (#d4d4ce light)
      secondary       supporting copy                      (#4f4f4b light)
      faint           disabled text, out-of-month days     (#a8a8a4 light)
-     tint            active chips, good banners           (#e8f3ee light)
-     tint-border     border of the above                  (#c3dfd3 light)
+     tint            active chips, good banners           (#ebf0ff light)
+     tint-border     border of the above                  (#c8d4fc light)
      brand-ink       text/icon on tint (primary in light, accent in dark -
-                     the dark primary #147a5c fails 4.5:1 on #121214 so it
+                     the dark primary #2d5bff fails 4.5:1 on #121214 so it
                      can never be body ink there)
      good/warning/danger  status fill + ink + border pairs
      seq-1..6        one-hue sequential ramp, light -> dark in light mode,
@@ -86,28 +93,28 @@
                      "more contrast against the page" either way)
    Dark values were picked so each pair keeps >= 4.5:1 ink-on-fill. */
 :root {
-  --color-subtle: 17 23 24;
-  --color-border-strong: 42 52 54;
-  --color-secondary: 163 176 172;
-  --color-faint: 75 90 87;
-  --color-tint: 19 35 32;
-  --color-tint-border: 36 65 58;
-  --color-brand-ink: 67 229 160;
-  --color-good: 67 229 160;
-  --color-good-fill: 19 35 32;
-  --color-good-border: 36 65 58;
+  --color-subtle: 17 17 20;
+  --color-border-strong: 42 43 51;
+  --color-secondary: 161 163 173;
+  --color-faint: 75 77 86;
+  --color-tint: 14 22 51;
+  --color-tint-border: 43 53 102;
+  --color-brand-ink: 142 166 255;
+  --color-good: 74 222 128;
+  --color-good-fill: 14 32 22;
+  --color-good-border: 30 80 52;
   --color-warning: 242 184 75;
   --color-warning-fill: 42 32 14;
   --color-warning-border: 92 66 22;
   --color-danger: 255 122 107;
   --color-danger-fill: 46 21 19;
   --color-danger-border: 104 44 38;
-  --color-seq-1: 19 35 32;
-  --color-seq-2: 24 70 56;
-  --color-seq-3: 34 120 90;
-  --color-seq-4: 52 175 125;
-  --color-seq-5: 67 229 160;
-  --color-seq-6: 170 245 210;
+  --color-seq-1: 14 22 51;
+  --color-seq-2: 22 40 110;
+  --color-seq-3: 30 62 180;
+  --color-seq-4: 45 91 255;
+  --color-seq-5: 110 143 255;
+  --color-seq-6: 190 205 255;
   /* Chart series, assigned in order, never cycled (DESIGN_BRIEF.md). The
      palette is the same in both themes - System.dc.html: "Chart series
      palette stays the same in dark mode". Source of truth for the hexes is
@@ -123,17 +130,17 @@
      (System.dc.html: the Subtle fill in light, Border in dark - the same
      pair as src/ui/tokens.ts GRIDLINE); the baseline / crosshair / donut
      leader is one step stronger. Solid hairlines, never dashed. */
-  --chart-grid: 24 31 33;
-  --chart-axis: 42 52 54;
+  --chart-grid: 26 27 32;
+  --chart-axis: 42 43 51;
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
   --shadow-pop: 0 8px 24px -8px rgb(0 0 0 / 0.6), 0 1px 2px rgb(0 0 0 / 0.4);
   /* 2026-10-10 (Clarity Blueprint, one product with three intents): the
      colour of each kind of work, the same everywhere it appears (Home,
      Library, page headers, dashboard cards). Answer = brand green,
      Analysis (Studio) = blue, Dashboard = amber. ink / fill / border. */
-  --color-kind-answer: 67 229 160;
-  --color-kind-answer-fill: 19 35 32;
-  --color-kind-answer-border: 36 65 58;
+  --color-kind-answer: 142 166 255;
+  --color-kind-answer-fill: 14 22 51;
+  --color-kind-answer-border: 43 53 102;
   --color-kind-analysis: 157 189 255;
   --color-kind-analysis-fill: 15 23 41;
   --color-kind-analysis-border: 45 63 99;
@@ -146,41 +153,41 @@
   --color-kind-alert-border: 74 54 120;
 }
 :root[data-theme="light"] {
-  --color-subtle: 241 241 237;
-  --color-border-strong: 212 212 206;
-  --color-secondary: 79 79 75;
-  --color-faint: 168 168 164;
-  --color-tint: 232 243 238;
-  --color-tint-border: 195 223 211;
-  --color-brand-ink: 15 92 70;
-  --color-good: 15 92 70;
-  --color-good-fill: 232 243 238;
-  --color-good-border: 195 223 211;
+  --color-subtle: 242 243 246;
+  --color-border-strong: 210 212 220;
+  --color-secondary: 78 80 90;
+  --color-faint: 165 167 176;
+  --color-tint: 235 240 255;
+  --color-tint-border: 200 212 252;
+  --color-brand-ink: 36 76 235;
+  --color-good: 21 128 61;
+  --color-good-fill: 232 246 237;
+  --color-good-border: 190 228 203;
   --color-warning: 180 83 9;
   --color-warning-fill: 253 241 227;
   --color-warning-border: 243 220 189;
   --color-danger: 180 35 24;
   --color-danger-fill: 253 236 234;
   --color-danger-border: 246 201 196;
-  --color-seq-1: 232 243 238;
-  --color-seq-2: 195 223 211;
-  --color-seq-3: 143 196 173;
-  --color-seq-4: 79 154 124;
-  --color-seq-5: 31 111 85;
-  --color-seq-6: 15 74 56;
+  --color-seq-1: 235 240 255;
+  --color-seq-2: 200 212 252;
+  --color-seq-3: 140 165 252;
+  --color-seq-4: 80 115 250;
+  --color-seq-5: 45 91 255;
+  --color-seq-6: 24 55 180;
   --color-series-1: 57 135 229;
   --color-series-2: 217 89 38;
   --color-series-3: 25 158 112;
   --color-series-4: 201 133 0;
   --color-series-5: 213 81 129;
   --color-series-6: 0 131 0;
-  --chart-grid: 241 241 237;
-  --chart-axis: 212 212 206;
+  --chart-grid: 236 237 241;
+  --chart-axis: 212 214 222;
   --shadow-card: 0 1px 2px rgb(22 22 21 / 0.04);
   --shadow-pop: 0 8px 24px -8px rgb(22 22 21 / 0.18), 0 1px 2px rgb(22 22 21 / 0.06);
-  --color-kind-answer: 15 92 70;
-  --color-kind-answer-fill: 232 243 238;
-  --color-kind-answer-border: 195 223 211;
+  --color-kind-answer: 36 76 235;
+  --color-kind-answer-fill: 235 240 255;
+  --color-kind-answer-border: 200 212 252;
   --color-kind-analysis: 37 84 178;
   --color-kind-analysis-fill: 236 242 253;
   --color-kind-analysis-border: 196 213 245;
@@ -1187,9 +1194,9 @@ input[type="radio"] {
   --auto-when: 201 167 255;
   --auto-when-fill: 26 23 48;
   --auto-when-border: 58 47 100;
-  --auto-do: 67 229 160;
-  --auto-do-fill: 19 35 32;
-  --auto-do-border: 36 65 58;
+  --auto-do: 61 102 255;
+  --auto-do-fill: 14 22 51;
+  --auto-do-border: 43 53 102;
   --auto-tell: 122 167 255;
   --auto-tell-fill: 20 28 43;
   --auto-tell-border: 38 55 90;
@@ -1198,9 +1205,9 @@ input[type="radio"] {
   --auto-when: 109 64 201;
   --auto-when-fill: 243 238 253;
   --auto-when-border: 221 208 247;
-  --auto-do: 15 122 84;
-  --auto-do-fill: 232 243 238;
-  --auto-do-border: 195 223 211;
+  --auto-do: 36 76 235;
+  --auto-do-fill: 235 240 255;
+  --auto-do-border: 200 212 252;
   --auto-tell: 37 99 199;
   --auto-tell-fill: 234 241 252;
   --auto-tell-border: 198 216 245;
@@ -1216,16 +1223,16 @@ input[type="radio"] {
   --ops-automation: 197 155 255;
   --ops-alert: 242 196 107;
   --ops-refresh: 122 167 255;
-  --ops-chain: 67 229 160;
+  --ops-chain: 61 102 255;
   --ops-sync: 255 138 122;
   --ops-fill-alpha: 0.12;
-  --trust-ring-track: 31 39 41;
+  --trust-ring-track: 30 31 36;
 }
 :root[data-theme="light"] {
   --ops-automation: 118 74 206;
   --ops-alert: 160 98 0;
   --ops-refresh: 38 96 210;
-  --ops-chain: 15 122 88;
+  --ops-chain: 36 76 235;
   --ops-sync: 190 62 46;
   --ops-fill-alpha: 0.1;
   --trust-ring-track: 227 227 222;
@@ -1322,7 +1329,7 @@ input[type="radio"] {
   height: 26px;
   border-radius: 999px;
   background: var(--pin, rgb(var(--color-primary)));
-  color: #07090A;
+  color: #0A0A0B;
   font-size: 9.5px;
   font-weight: 700;
   letter-spacing: 0.01em;
@@ -1416,7 +1423,7 @@ input[type="radio"] {
 
 /* ============================================================
    2026-10-15 (R50, GD360 3.0): ONE design system. 2026-10-19 (R55): values are now
-   GD360 brand v2 - Signal green #0B6E4F (dark #3FBF8F), Ink #121514, Paper #FAFAF9, Panel #F3F4F3. Every page - Home, the
+   GD360 brand v2 (2026-11-11: now Euliv Cobalt #2D5BFF, see the header note), Ink #121514, Paper #FAFAF9, Panel #F3F4F3. Every page - Home, the
    conversation, Library, Dashboards, Data, Automations, Settings - reads
    the same tokens: ink #0B0F0E, one accent #0A7C5A, hairlines #E3E6E4,
    white ground, Geist. These override the older Obsidian / warm-off-white
@@ -1424,75 +1431,149 @@ input[type="radio"] {
    chat surface (.c2) already used exactly these values.
    ============================================================ */
 :root {
-  --color-base: 12 13 13;
-  --color-surface: 21 24 24;
-  --color-surface2: 27 31 31;
-  --color-border: 37 42 41;
-  --color-border-strong: 52 58 57;
-  --color-subtle: 24 28 28;
-  --color-primary: 63 191 143;
-  --color-on-primary: 4 20 14;
-  --color-accent: 63 191 143;
-  --color-brand-ink: 95 211 166;
-  --color-text: 236 239 238;
-  --color-secondary: 179 186 184;
-  --color-muted: 127 135 133;
-  --color-faint: 82 90 88;
-  --color-tint: 19 42 35;
-  --color-tint-border: 34 76 62;
-  --color-good: 92 203 138;
-  --color-good-fill: 19 42 35;
-  --color-good-border: 34 76 62;
-  --chart-grid: 31 36 35;
-  --chart-axis: 52 58 57;
+  --color-base: 10 10 11;
+  --color-surface: 15 15 17;
+  --color-surface2: 22 23 28;
+  --color-border: 30 31 36;
+  --color-border-strong: 42 43 51;
+  --color-subtle: 17 17 20;
+  --color-primary: 45 91 255;
+  --color-on-primary: 255 255 255;
+  --color-accent: 61 102 255;
+  --color-brand-ink: 142 166 255;
+  --color-text: 237 237 239;
+  --color-secondary: 161 163 173;
+  --color-muted: 107 109 118;
+  --color-faint: 75 77 86;
+  --color-tint: 14 22 51;
+  --color-tint-border: 43 53 102;
+  --color-good: 74 222 128;
+  --color-good-fill: 14 32 22;
+  --color-good-border: 30 80 52;
+  --chart-grid: 26 27 32;
+  --chart-axis: 42 43 51;
   --glow-1: transparent;
   --glow-2: transparent;
-  --gx-rail: 17 19 19;
-  --gx-ink: 236 239 238;
-  --gx-panel: 17 19 19;
+  --gx-rail: 13 13 15;
+  --gx-ink: 237 237 239;
+  --gx-panel: 13 13 15;
 }
 :root[data-theme="light"] {
-  --color-base: 250 250 249;
+  --color-base: 247 247 249;
   --color-surface: 255 255 255;
-  --color-surface2: 243 244 243;
-  --color-border: 231 232 230;
-  --color-border-strong: 214 217 214;
-  --color-subtle: 243 244 243;
-  --color-primary: 11 110 79;
+  --color-surface2: 243 244 247;
+  --color-border: 226 228 234;
+  --color-border-strong: 210 212 220;
+  --color-subtle: 242 243 246;
+  --color-primary: 36 76 235;
   --color-on-primary: 255 255 255;
-  --color-accent: 14 138 99;
-  --color-brand-ink: 11 110 79;
-  --color-text: 18 21 20;
-  --color-secondary: 74 80 78;
-  --color-muted: 110 116 114;
-  --color-faint: 168 172 170;
-  --color-tint: 232 243 238;
-  --color-tint-border: 190 222 208;
-  --color-good: 28 122 68;
-  --color-good-fill: 232 243 238;
-  --color-good-border: 190 222 208;
+  --color-accent: 45 91 255;
+  --color-brand-ink: 36 76 235;
+  --color-text: 17 18 22;
+  --color-secondary: 78 80 90;
+  --color-muted: 106 108 118;
+  --color-faint: 165 167 176;
+  --color-tint: 235 240 255;
+  --color-tint-border: 200 212 252;
+  --color-good: 21 128 61;
+  --color-good-fill: 232 246 237;
+  --color-good-border: 190 228 203;
   --color-warning: 163 90 10;
   --color-warning-fill: 255 244 223;
   --color-warning-border: 240 214 160;
   --color-danger: 194 54 44;
   --color-danger-fill: 251 237 233;
   --color-danger-border: 240 200 190;
-  --color-kind-answer: 11 110 79;
-  --color-kind-answer-fill: 232 243 238;
-  --color-kind-answer-border: 190 222 208;
-  --chart-grid: 236 238 237;
-  --chart-axis: 214 217 214;
-  --shadow-card: 0 1px 2px rgb(11 15 14 / 0.04);
-  --shadow-pop: 0 12px 40px rgb(11 15 14 / 0.12), 0 1px 2px rgb(11 15 14 / 0.06);
+  --color-kind-answer: 36 76 235;
+  --color-kind-answer-fill: 235 240 255;
+  --color-kind-answer-border: 200 212 252;
+  --chart-grid: 236 237 241;
+  --chart-axis: 212 214 222;
+  --shadow-card: 0 1px 2px rgb(10 10 14 / 0.04);
+  --shadow-pop: 0 12px 40px rgb(10 10 14 / 0.12), 0 1px 2px rgb(10 10 14 / 0.06);
   --glow-1: transparent;
   --glow-2: transparent;
-  --gx-rail: 243 244 243;
-  --gx-ink: 18 21 20;
-  --gx-panel: 243 244 243;
+  --gx-rail: 243 244 247;
+  --gx-ink: 17 18 22;
+  --gx-panel: 243 244 247;
 }
 body { background: rgb(var(--color-base)); font-family: "Geist", system-ui, sans-serif; }
 .dash-shell { background: rgb(var(--color-base)); }
 
 /* 2026-10-24 (R61): the Euliv orb's gradient - mint -> periwinkle on the dark (default) theme, the deep pair on light */
-:root { --eu-a: #43E5A0; --eu-b: #9DBDFF; }
-:root[data-theme="light"] { --eu-a: #0E9F6B; --eu-b: #5F7FE8; }
+:root { --eu-a: #3D66FF; --eu-b: #9DBDFF; }
+:root[data-theme="light"] { --eu-a: #1F47E6; --eu-b: #6E8FFF; }
+
+/* ============================================================
+   2026-11-11 (Midnight & Cobalt): sign-in / sign-up - form on the left, a cobalt sky on the right
+   (components/AuthArt.tsx). The panel stays the same in light and dark: it is artwork, not chrome.
+   ============================================================ */
+.eu-auth { min-height: 100vh; display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; background: rgb(var(--color-base)); }
+.eu-auth-main { flex: 1 1 440px; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 48px 24px; position: relative; }
+.eu-auth-form { width: 100%; max-width: 400px; display: flex; flex-direction: column; gap: 26px; }
+.eu-auth-form h1 { margin: 0; font-size: 30px; line-height: 1.15; font-weight: 600; letter-spacing: -0.025em; color: rgb(var(--color-text)); }
+.eu-auth-form .eu-sub { margin: 6px 0 0; font-size: 15px; color: rgb(var(--color-secondary)); }
+.eu-auth-form label { display: block; font-size: 13px; color: rgb(var(--color-secondary)); margin-bottom: 6px; }
+.eu-auth-form .input { height: 46px; border-radius: 10px; }
+.eu-auth-form .btn-primary { height: 46px; border-radius: 10px; font-weight: 500; box-shadow: inset 0 0 0 1px rgb(255 255 255 / .08), 0 8px 24px -8px rgb(var(--color-primary) / .6); }
+.eu-auth-form a.eu-link { color: rgb(var(--color-brand-ink)); }
+.eu-auth-form a.eu-link:hover { text-decoration: underline; }
+.eu-auth-fine { font-size: 12.5px; color: rgb(var(--color-muted)); text-align: center; }
+.eu-auth-fine a:hover { color: rgb(var(--color-text)); }
+.eu-auth-art { flex: 1.3 1 520px; min-width: 0; min-height: calc(100vh - 32px); border-radius: 20px; position: relative; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 48px 24px; box-sizing: border-box;
+  background:
+    radial-gradient(38% 30% at 22% 80%, rgba(255,255,255,.5), rgba(255,255,255,0) 70%),
+    radial-gradient(26% 22% at 80% 70%, rgba(214,226,255,.55), rgba(214,226,255,0) 70%),
+    radial-gradient(18% 14% at 58% 90%, rgba(255,214,170,.38), rgba(255,214,170,0) 70%),
+    radial-gradient(60% 50% at 70% 8%, rgba(95,130,255,.6), rgba(95,130,255,0) 70%),
+    linear-gradient(180deg, #0C1A5C 0%, #2448D8 38%, #6F8FF0 68%, #C6D3FA 100%); }
+.eu-auth-dots { position: absolute; inset: 0; background-image: radial-gradient(rgba(255,255,255,.32) 1px, transparent 1.4px); background-size: 22px 22px;
+  -webkit-mask-image: linear-gradient(180deg, rgba(0,0,0,.9), rgba(0,0,0,0) 55%); mask-image: linear-gradient(180deg, rgba(0,0,0,.9), rgba(0,0,0,0) 55%); }
+.eu-auth-grain { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .22; mix-blend-mode: overlay; }
+.eu-auth-tag { position: relative; font: 500 11px "Geist Mono", ui-monospace, monospace; letter-spacing: .1em; color: #fff; background: rgba(8,12,40,.35); border: 1px solid rgba(255,255,255,.25); padding: 6px 10px; border-radius: 999px; }
+.eu-auth-card { position: relative; width: 100%; max-width: 500px; background: #fff; color: #121317; border-radius: 16px; padding: 22px 24px; box-sizing: border-box; box-shadow: 0 30px 60px -20px rgba(10,20,80,.5); display: flex; flex-direction: column; gap: 14px; }
+.eu-auth-q { margin: 0; font-size: 13px; color: #5E616B; }
+.eu-auth-trail { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 0 12px; }
+.eu-auth-rail { display: flex; flex-direction: column; align-items: center; padding-top: 6px; }
+.eu-auth-rail i { width: 7px; height: 7px; border-radius: 9px; border: 1px solid #2D5BFF; background: #fff; flex: none; }
+.eu-auth-rail i.on { width: 9px; height: 9px; background: #2D5BFF; box-shadow: 0 0 0 4px rgba(45,91,255,.15); }
+.eu-auth-rail i.ok { border-color: #15803D; }
+.eu-auth-rail b { flex: 1; width: 1px; background: linear-gradient(#2D5BFF, rgba(45,91,255,.2)); }
+.eu-auth-steps { display: flex; flex-direction: column; gap: 10px; }
+.eu-auth-a { margin: 0; font-size: 18px; line-height: 1.4; font-weight: 500; letter-spacing: -0.01em; }
+.eu-auth-bars { display: flex; align-items: flex-end; gap: 8px; height: 64px; }
+.eu-auth-bars span { flex: 1; background: #DCE3FF; border-radius: 4px 4px 0 0; }
+.eu-auth-bars span.hi { background: #2D5BFF; }
+.eu-auth-step { margin: 0; font-size: 12.5px; color: #5E616B; }
+.eu-auth-step span { font: 500 10.5px "Geist Mono", ui-monospace, monospace; letter-spacing: .08em; color: #8A8D96; margin-right: 6px; }
+.eu-auth-step.ok span { color: #15803D; }
+.eu-auth-chips { position: relative; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.eu-auth-chips span { font: 500 12px "Geist", sans-serif; color: #121317; background: rgba(255,255,255,.8); padding: 7px 12px; border-radius: 999px; }
+.eu-auth-chips b { font-family: "Geist Mono", ui-monospace, monospace; font-weight: 500; }
+@media (max-width: 900px) { .eu-auth-art { min-height: 420px; } }
+
+/* ============================================================
+   2026-11-11 (live maps): the live street map (dashboard/charts/LiveMapCanvas.tsx)
+   ============================================================ */
+.eu-map { position: relative; width: 100%; height: 100%; border-radius: var(--radius-ctl, 10px); overflow: hidden; background: rgb(var(--color-base)); isolation: isolate; }
+.eu-map-canvas, .eu-map-canvas.maplibregl-map { position: absolute !important; inset: 0; width: 100%; height: 100%; }
+.eu-map-loading, .eu-map-msg { display: grid; place-items: center; color: rgb(var(--color-muted)); font-size: 13px; }
+.eu-map-tools { position: absolute; top: 10px; left: 10px; z-index: 2; display: flex; gap: 3px; padding: 3px; border-radius: 10px;
+  background: rgb(var(--color-surface) / .88); border: 1px solid rgb(var(--color-border)); backdrop-filter: blur(8px); }
+.eu-map-tools button { height: 28px; padding: 0 10px; border-radius: 7px; font: 500 12.5px "Geist", system-ui, sans-serif; color: rgb(var(--color-secondary)); background: transparent; }
+.eu-map-tools button:hover { color: rgb(var(--color-text)); }
+.eu-map-tools button.on { background: rgb(var(--color-tint)); color: rgb(var(--color-brand-ink)); box-shadow: inset 0 0 0 1px rgb(var(--color-tint-border)); }
+.eu-map-legend { position: absolute; left: 10px; bottom: 10px; z-index: 2; padding: 6px 10px; border-radius: 8px; font: 500 11.5px "Geist Mono", ui-monospace, monospace;
+  color: rgb(var(--color-secondary)); background: rgb(var(--color-surface) / .88); border: 1px solid rgb(var(--color-border)); backdrop-filter: blur(8px); }
+.eu-map-legend b { color: rgb(var(--color-text)); font-weight: 600; }
+.eu-map .maplibregl-ctrl-group { background: rgb(var(--color-surface)); border: 1px solid rgb(var(--color-border)); box-shadow: none; border-radius: 10px; overflow: hidden; }
+.eu-map .maplibregl-ctrl-group button + button { border-top: 1px solid rgb(var(--color-border)); }
+:root:not([data-theme="light"]) .eu-map .maplibregl-ctrl-icon { filter: invert(1) brightness(.85); }
+.eu-map .maplibregl-ctrl-attrib { background: rgb(var(--color-surface) / .8) !important; color: rgb(var(--color-muted)); font-size: 10.5px; }
+.eu-map .maplibregl-ctrl-attrib a { color: rgb(var(--color-secondary)); }
+.eu-map-pop .maplibregl-popup-content { background: rgb(var(--color-surface)); color: rgb(var(--color-text)); border: 1px solid rgb(var(--color-border-strong));
+  border-radius: 10px; padding: 8px 10px; font: 400 12.5px "Geist", system-ui, sans-serif; box-shadow: var(--shadow-pop); }
+.eu-map-pop .maplibregl-popup-content b { font-family: "Geist Mono", ui-monospace, monospace; font-weight: 500; }
+.eu-map-pop .maplibregl-popup-tip { display: none; }
+.eu-map .maplibregl-cooperative-gesture-screen { font: 500 13px "Geist", system-ui, sans-serif; }
