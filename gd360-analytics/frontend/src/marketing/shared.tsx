@@ -121,8 +121,8 @@ export function SoonDialog({ open, onClose, eyebrow, title, primary, children }:
           <span className="gd-soon-ring"></span>
           <span className="gd-soon-ring gd-soon-ring2"></span>
           <svg width="30" height="30" viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="12" r="9" stroke="#04140D" strokeWidth="1.8" />
-            <path d="M12 7v5l3.2 2" stroke="#04140D" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            <circle cx="12" cy="12" r="9" stroke="#FFFFFF" strokeWidth="1.8" />
+            <path d="M12 7v5l3.2 2" stroke="#FFFFFF" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </div>
         <span className="gd-soon-eyebrow">{eyebrow}</span>
