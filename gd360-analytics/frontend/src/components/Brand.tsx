@@ -1,17 +1,17 @@
 // 2026-10-24 (R61, Euliv brand): the final Euliv logo (canvas "Euliv Logo", Strata option A "Forward").
 // The symbol is the Euliv orb cut into three layers with the middle layer shifted right (data -> understanding -> answer,
-// the data coming alive and moving forward), mint -> periwinkle on dark grounds and the deep pair on light ones.
+// the data coming alive and moving forward), cobalt -> periwinkle on dark grounds (2026-11-11: Euliv Cobalt) and the deep pair on light ones.
 // The wordmark is lowercase "euliv" in Geist SemiBold, outlined, with the orb as the i-dot.
 import { useId } from "react";
 
 type Tone = "auto" | "bright" | "deep" | "white" | "black";
 
 function stops(tone: Tone): [string, string] {
-  if (tone === "bright") return ["#43E5A0", "#9DBDFF"];
-  if (tone === "deep") return ["#0E9F6B", "#5F7FE8"];
+  if (tone === "bright") return ["#3D66FF", "#9DBDFF"];
+  if (tone === "deep") return ["#1F47E6", "#6E8FFF"];
   if (tone === "white") return ["#FFFFFF", "#FFFFFF"];
-  if (tone === "black") return ["#07090A", "#07090A"];
-  return ["var(--eu-a, #43E5A0)", "var(--eu-b, #9DBDFF)"];   // follows the theme (index.css)
+  if (tone === "black") return ["#0A0A0B", "#0A0A0B"];
+  return ["var(--eu-a, #3D66FF)", "var(--eu-b, #9DBDFF)"];   // follows the theme (index.css)
 }
 
 /** The Euliv symbol: the three-layer orb. */

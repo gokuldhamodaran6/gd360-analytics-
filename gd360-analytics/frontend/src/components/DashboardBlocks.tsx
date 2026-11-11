@@ -253,7 +253,7 @@ function AccentSwatch({
         <input
           type="color"
           className="sr-only"
-          value={customColor || "#2d8267"}
+          value={customColor || "#3d66ff"}
           onChange={(e) => onAccentColorChange(e.target.value)}
         />
       </label>

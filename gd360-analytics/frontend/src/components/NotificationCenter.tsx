@@ -85,7 +85,7 @@ const KindIcon = ({ n }: { n: AppNotification }) => {
   if (n.kind === "mention" || n.kind === "comment") {
     const who = String(n.data?.initials || "").slice(0, 2) || "•";
     return (
-      <span className="relative w-8 h-8 shrink-0 rounded-full text-[#07090A] grid place-items-center text-[11px] font-semibold" style={{ background: personColor(n.data?.author) }} data-notification-kind={n.kind}>
+      <span className="relative w-8 h-8 shrink-0 rounded-full text-[#0A0A0B] grid place-items-center text-[11px] font-semibold" style={{ background: personColor(n.data?.author) }} data-notification-kind={n.kind}>
         {who}
         <span className="absolute -right-1 -bottom-1 w-4 h-4 rounded-full bg-surface border border-border grid place-items-center text-[9px] text-brand-ink" aria-hidden="true">{n.kind === "mention" ? "@" : "”"}</span>
       </span>
