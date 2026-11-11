@@ -16,6 +16,15 @@ export type BoardSummary = {
   // 2026-10-19 (R56): the Dashboard studio
   draft?: boolean; published_at?: string | null; edited_at?: string | null; can_undo?: boolean; versions?: number; changed?: Record<string, string>;
   access?: { draft: boolean; published_at?: string | null; people: number; workspace: boolean };
+  // R67: the company's own colour, which data it reads, whether a link is out
+  accent?: string | null; rows_at_build?: number | null; link?: boolean;
+  source_info?: { id?: string | null; name?: string | null; kind?: string | null; table?: string | null; rows?: number | null; synced_at?: string | null } | null;
+};
+export type BoardShare = {
+  workspace: { on: boolean; available: boolean; people?: number };
+  link: { published: boolean; mode: "public" | "private" | null; slug: string | null; password: boolean; views: number;
+    emails: { id: string; email: string }[]; domain: string | null; domain_status: string | null; domain_error: string | null };
+  public_allowed: boolean;
 };
 export type BoardEdit = { summary: BoardSummary; change: string; changed: string[]; page_id?: string; block_id?: string };
 export type BoardColumns = { dims: { column: string; label: string }[]; measures: { column: string; label: string }[]; outcome: boolean; date?: string | null;
@@ -26,6 +35,8 @@ export type Block = {
   id: string; kind: string; type: "kpi" | "bars" | "line" | "table" | "list" | "tiers" | "empty" | "note" | "map"; span: number; h: number; hero: boolean;
   // R66: a live street map (type "map"): rows of {place?, lat?, lon?, value}
   mode?: "points" | "places"; place_label?: string | null; measure_label?: string; currency?: string;
+  // R67: how the editor asked for it to be drawn, and its colour
+  style?: string | null; color?: string | null;
   title?: string; sub?: string; note?: string; definition?: string; text?: string;
   value?: number | null; unit?: Unit; tone?: Tone; chips?: Chip[]; spark?: (number | null)[] | null;
   curve?: { label: string; points: Point[] } | null; stack?: { label: string; value: number; tone: Tone }[];
@@ -64,6 +75,22 @@ export const boardsApi = {
   undo: (id: string) => api.post<BoardEdit>(`/v2/boards/${id}/undo`, {}).then((r) => r.data),
   versions: (id: string) => api.get<{ versions: BoardVersion[] }>(`/v2/boards/${id}/versions`).then((r) => r.data.versions),
   restore: (id: string, index: number) => api.post<BoardEdit>(`/v2/boards/${id}/versions/restore`, { index }).then((r) => r.data),
+  // R67: Power BI-style editing, pages, brand, a real thumbnail, sharing
+  setBlock: (id: string, blockId: string, body: { span?: number; h?: number; to_index?: number; style?: string; color?: string; clear_color?: boolean }) =>
+    api.post<BoardEdit>(`/v2/boards/${id}/blocks/${blockId}/set`, body).then((r) => r.data),
+  addPage: (id: string, name: string) => api.post<BoardEdit>(`/v2/boards/${id}/pages`, { name }).then((r) => r.data),
+  renamePage: (id: string, pageId: string, name: string) => api.put<BoardEdit>(`/v2/boards/${id}/pages/${pageId}`, { name }).then((r) => r.data),
+  deletePage: (id: string, pageId: string) => api.delete<BoardEdit>(`/v2/boards/${id}/pages/${pageId}`).then((r) => r.data),
+  brand: (id: string, body: { accent?: string | null; mode?: "light" | "dark" }) => api.post<BoardEdit>(`/v2/boards/${id}/brand`, body).then((r) => r.data),
+  thumbnail: (id: string, image: string) => api.post(`/v2/dashboards/${id}/thumbnail`, { image }).then((r) => r.data),
+  share: (id: string) => api.get<BoardShare>(`/v2/boards/${id}/share`).then((r) => r.data),
+  shareLink: (id: string, mode: "public" | "private", password?: string) => api.post<BoardShare>(`/v2/boards/${id}/share`, { mode, password: password || null }).then((r) => r.data),
+  shareOff: (id: string) => api.delete<BoardShare>(`/v2/boards/${id}/share`).then((r) => r.data),
+  shareEmail: (id: string, email: string) => api.post<BoardShare>(`/v2/boards/${id}/share/emails`, { email }).then((r) => r.data),
+  shareEmailOff: (id: string, emailId: string) => api.delete<BoardShare>(`/v2/boards/${id}/share/emails/${emailId}`).then((r) => r.data),
+  shareDomain: (id: string, domain: string) => api.post<BoardShare>(`/v2/boards/${id}/share/domain`, { domain }).then((r) => r.data),
+  shareDomainCheck: (id: string) => api.post<BoardShare>(`/v2/boards/${id}/share/domain/recheck`, {}).then((r) => r.data),
+  shareDomainOff: (id: string) => api.delete<BoardShare>(`/v2/boards/${id}/share/domain`).then((r) => r.data),
   publish: (id: string, on = true) => api.post<BoardEdit>(`/v2/boards/${id}/${on ? "publish" : "unpublish"}`, {}).then((r) => r.data),
   download: async (id: string, kind: "xlsx" | "pptx", filters: Record<string, string>, name?: string) => {
     const res = await api.get(`/v2/boards/${id}/export.${kind}`, { params: { filters: JSON.stringify(filters || {}) }, responseType: "blob" });

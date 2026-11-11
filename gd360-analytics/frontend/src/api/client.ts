@@ -1579,6 +1579,8 @@ export type DashboardSummary = {
   refresh_interval?: RefreshInterval;
   // 2026-10-15 (R50): a designed board's theme and pages (thumbnail in its own colours)
   board?: { theme: string; theme_label: string; pages: string[]; palette: { bg: string; card: string; ink: string; accent: string; warn: string; mode: string }; outcome: boolean; entities?: string } | null;
+  /** R67: a real picture of the dashboard (small JPEG data URL), drawn by the browser that last opened it */
+  thumbnail?: string | null;
 };
 
 export type SavedChart = {
@@ -2161,6 +2163,8 @@ export type DashboardPickerEntry = {
 export type PublicDashboard = DashboardBranding & WarehouseDashboardFields & {
   name: string;
   pages: DashboardBuilderPage[];
+  /** R67: a designed dashboard (board) on its published link - its summary; pages run through runBoard */
+  board?: any | null;
 };
 
 // 2026-09-24 (Phase 2): the manual-build form's five whitelisted
@@ -3157,6 +3161,13 @@ export const publicDashboardApi = {
       .post<RunPageResponse>(`/public/dashboards/${slug}/pages/${pageId}/run`, publicRunBody(req), {
         headers: viewerToken ? { "X-Dashboard-Access-Token": viewerToken } : undefined,
         signal,
+      })
+      .then((r) => r.data),
+  // R67: one page of a published designed dashboard (by slug, or by the company's own domain)
+  runBoard: (key: string, byHostname: boolean, body: { page_id: string | null; filters: Record<string, string> }, viewerToken?: string) =>
+    publicApi
+      .post(byHostname ? `/public/domains/${encodeURIComponent(key)}/board/run` : `/public/dashboards/${key}/board/run`, body, {
+        headers: viewerToken ? { "X-Dashboard-Access-Token": viewerToken } : undefined,
       })
       .then((r) => r.data),
   runPageByHostname: (hostname: string, pageId: string, req: RunPageRequest, viewerToken?: string, signal?: AbortSignal) =>
