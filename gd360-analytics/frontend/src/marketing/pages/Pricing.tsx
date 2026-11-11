@@ -125,42 +125,42 @@ export default function MarketingPricing() {
     }
   };
   return (
-    <div className="mkt-pricing" style={{ fontFamily: "Geist, 'Helvetica Neue', system-ui, sans-serif", color: "#E8EEEC", background: "#07090A", minHeight: "100vh", overflowX: "clip" }}>
+    <div className="mkt-pricing" style={{ fontFamily: "Geist, 'Helvetica Neue', system-ui, sans-serif", color: "#EDEDEF", background: "#0A0A0B", minHeight: "100vh", overflowX: "clip" }}>
       {" "}
-      <header className="mk-site-head" style={{ position: "relative", zIndex: "5", borderBottom: "1px solid #141A1B", background: "rgba(7,9,10,.82)" }}>
+      <header className="mk-site-head" style={{ position: "relative", zIndex: "5", borderBottom: "1px solid #141418", background: "rgba(10,10,11,.82)" }}>
         {" "}
         <nav className="mk-site-nav" aria-label="Main" style={{ maxWidth: "1280px", margin: "0 auto", padding: "16px 24px", display: "flex", alignItems: "center", gap: "30px", flexWrap: "wrap" }}>
           {" "}
-          <A href="/" style={{ display: "flex", alignItems: "center", gap: "10px", color: "#E8EEEC" }}>
+          <A href="/" style={{ display: "flex", alignItems: "center", gap: "10px", color: "#EDEDEF" }}>
             <EulivMark size={34} tone="bright" /> <Wordmark size={22} tone="bright" />
           </A>
           {" "}
           <div className="mk-navlinks mk-d-only" style={{ display: "flex", gap: "26px", flexWrap: "wrap", fontSize: "15px", flex: "1 1 auto" }}>
-            <A href="/#see" style={{ color: "#A3B0AC" }}>
+            <A href="/#see" style={{ color: "#A1A3AD" }}>
               {"Product"}
             </A>
-            <A href="/#platform" style={{ color: "#A3B0AC" }}>
+            <A href="/#platform" style={{ color: "#A1A3AD" }}>
               {"Platform"}
             </A>
-            <A href="/#teams" style={{ color: "#A3B0AC" }}>
+            <A href="/#teams" style={{ color: "#A1A3AD" }}>
               {"Solutions"}
             </A>
-            <A href="/#security" style={{ color: "#A3B0AC" }}>
+            <A href="/#security" style={{ color: "#A1A3AD" }}>
               {"Security"}
             </A>
-            <A href="/pricing" style={{ color: "#E8EEEC", fontWeight: "600" }}>
+            <A href="/pricing" style={{ color: "#EDEDEF", fontWeight: "600" }}>
               {"Pricing"}
             </A>
-            <A href="/about" style={{ color: "#A3B0AC" }}>
+            <A href="/about" style={{ color: "#A1A3AD" }}>
               {"About"}
             </A>
           </div>
           {" "}
           <div className="mk-d-only" style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-            <A href="/login" style={{ color: "#E8EEEC", fontSize: "15px", padding: "10px 14px" }}>
+            <A href="/login" style={{ color: "#EDEDEF", fontSize: "15px", padding: "10px 14px" }}>
               {"Sign in"}
             </A>
-            <A href="/start" style={{ background: "#43E5A0", color: "#04140D", fontWeight: "700", fontSize: "15px", padding: "12px 20px", borderRadius: "999px", minHeight: "44px", boxSizing: "border-box", display: "inline-flex", alignItems: "center", gap: "8px" }}>
+            <A href="/start" style={{ background: "#3D66FF", color: "#FFFFFF", fontWeight: "700", fontSize: "15px", padding: "12px 20px", borderRadius: "999px", minHeight: "44px", boxSizing: "border-box", display: "inline-flex", alignItems: "center", gap: "8px" }}>
               {"Get started "}
               <span aria-hidden="true">
                 {"→"}
@@ -172,9 +172,9 @@ export default function MarketingPricing() {
             {" "}
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               {" "}
-              <button type="button" aria-label="Open menu" aria-expanded={V.menuExpanded} onClick={V.openMenu} style={{ width: "44px", height: "44px", borderRadius: "12px", border: "1px solid #2A3436", background: "#0E1213", display: "grid", placeItems: "center", cursor: "pointer", padding: "0" }}>
+              <button type="button" aria-label="Open menu" aria-expanded={V.menuExpanded} onClick={V.openMenu} style={{ width: "44px", height: "44px", borderRadius: "12px", border: "1px solid #2A2B33", background: "#0F0F11", display: "grid", placeItems: "center", cursor: "pointer", padding: "0" }}>
                 <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
-                  <path d="M2.5 5h13M2.5 9h13M2.5 13h8" stroke="#E8EEEC" strokeWidth="1.7" strokeLinecap="round"></path>
+                  <path d="M2.5 5h13M2.5 9h13M2.5 13h8" stroke="#EDEDEF" strokeWidth="1.7" strokeLinecap="round"></path>
                 </svg>
               </button>
               {" "}
@@ -191,17 +191,17 @@ export default function MarketingPricing() {
           {" "}
           <div className="mk-m-only">
             {" "}
-            <div className="mk-msheet" role="dialog" aria-modal="true" aria-label="Menu" style={{ position: "fixed", inset: "0", zIndex: "80", background: "rgba(5,7,7,.97)", backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)", display: "flex", flexDirection: "column", padding: "10px 16px calc(20px + env(safe-area-inset-bottom, 0px))", overflowY: "auto" }}>
+            <div className="mk-msheet" role="dialog" aria-modal="true" aria-label="Menu" style={{ position: "fixed", inset: "0", zIndex: "80", background: "rgba(5,5,6,.97)", backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)", display: "flex", flexDirection: "column", padding: "10px 16px calc(20px + env(safe-area-inset-bottom, 0px))", overflowY: "auto" }}>
               {" "}
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: "48px" }}>
                 {" "}
-                <A href="/" onClick={V.closeMenu} style={{ display: "flex", alignItems: "center", gap: "10px", color: "#E8EEEC" }}>
+                <A href="/" onClick={V.closeMenu} style={{ display: "flex", alignItems: "center", gap: "10px", color: "#EDEDEF" }}>
                   <EulivMark size={34} tone="bright" /> <Wordmark size={22} tone="bright" />
                 </A>
                 {" "}
-                <button type="button" aria-label="Close menu" onClick={V.closeMenu} style={{ width: "44px", height: "44px", borderRadius: "12px", border: "1px solid #2A3436", background: "#0E1213", display: "grid", placeItems: "center", cursor: "pointer", padding: "0" }}>
+                <button type="button" aria-label="Close menu" onClick={V.closeMenu} style={{ width: "44px", height: "44px", borderRadius: "12px", border: "1px solid #2A2B33", background: "#0F0F11", display: "grid", placeItems: "center", cursor: "pointer", padding: "0" }}>
                   <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
-                    <path d="M4 4l10 10M14 4L4 14" stroke="#E8EEEC" strokeWidth="1.7" strokeLinecap="round"></path>
+                    <path d="M4 4l10 10M14 4L4 14" stroke="#EDEDEF" strokeWidth="1.7" strokeLinecap="round"></path>
                   </svg>
                 </button>
                 {" "}
@@ -212,9 +212,9 @@ export default function MarketingPricing() {
                 {(V.menuLinks || []).map((l: any, i1: number) => (
                   <Fragment key={i1}>
                     {" "}
-                    <A href={l.href} onClick={V.closeMenu} className={`mk-mlink ${l.cls ? "mk-" + l.cls : ""}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "15px 0", borderBottom: "1px solid #141A1B", color: "#E8EEEC", fontSize: "30px", fontWeight: "800", letterSpacing: "-0.035em" }}>
+                    <A href={l.href} onClick={V.closeMenu} className={`mk-mlink ${l.cls ? "mk-" + l.cls : ""}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "15px 0", borderBottom: "1px solid #141418", color: "#EDEDEF", fontSize: "30px", fontWeight: "800", letterSpacing: "-0.035em" }}>
                       {l.t}
-                      <span aria-hidden="true" style={{ color: "#43E5A0", fontSize: "20px" }}>
+                      <span aria-hidden="true" style={{ color: "#3D66FF", fontSize: "20px" }}>
                         {"→"}
                       </span>
                     </A>
@@ -226,15 +226,15 @@ export default function MarketingPricing() {
               {" "}
               <div style={{ marginTop: "auto", paddingTop: "28px", display: "flex", flexDirection: "column", gap: "10px" }}>
                 {" "}
-                <A href="/start" onClick={V.closeMenu} style={{ height: "54px", borderRadius: "999px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "700", fontSize: "16.5px" }}>
+                <A href="/start" onClick={V.closeMenu} style={{ height: "54px", borderRadius: "999px", background: "#3D66FF", color: "#FFFFFF", display: "grid", placeItems: "center", fontWeight: "700", fontSize: "16.5px" }}>
                   {"Get started"}
                 </A>
                 {" "}
-                <A href="/login" onClick={V.closeMenu} style={{ height: "54px", borderRadius: "999px", border: "1px solid #2A3436", color: "#E8EEEC", display: "grid", placeItems: "center", fontWeight: "600", fontSize: "16.5px" }}>
+                <A href="/login" onClick={V.closeMenu} style={{ height: "54px", borderRadius: "999px", border: "1px solid #2A2B33", color: "#EDEDEF", display: "grid", placeItems: "center", fontWeight: "600", fontSize: "16.5px" }}>
                   {"Sign in"}
                 </A>
                 {" "}
-                <span className="mk-mono" style={{ textAlign: "center", fontSize: "11.5px", color: "#7F8C88", marginTop: "8px", letterSpacing: "0.06em" }}>
+                <span className="mk-mono" style={{ textAlign: "center", fontSize: "11.5px", color: "#8E909A", marginTop: "8px", letterSpacing: "0.06em" }}>
                   {"EVERY SOURCE. ONE ANSWER. PROVEN."}
                 </span>
                 {" "}
@@ -251,7 +251,7 @@ export default function MarketingPricing() {
       {" "}
       <section id="enterprise" style={{ padding: "0 24px 104px" }}>
         {" "}
-        <div style={{ maxWidth: "1280px", margin: "0 auto", border: "1px solid #24413A", borderRadius: "30px", background: "radial-gradient(ellipse at 90% 0%, rgba(67,229,160,.17), rgba(7,9,10,0) 55%), #0B0F10", padding: "clamp(28px, 5vw, 64px)", display: "flex", flexWrap: "wrap", gap: "48px", alignItems: "flex-start" }}>
+        <div style={{ maxWidth: "1280px", margin: "0 auto", border: "1px solid #2B3566", borderRadius: "30px", background: "radial-gradient(ellipse at 90% 0%, rgba(61,102,255,.17), rgba(10,10,11,0) 55%), #0C0C0E", padding: "clamp(28px, 5vw, 64px)", display: "flex", flexWrap: "wrap", gap: "48px", alignItems: "flex-start" }}>
           {" "}
           <div style={{ flex: "1 1 460px", display: "flex", flexDirection: "column", gap: "20px" }}>
             {" "}
@@ -260,12 +260,12 @@ export default function MarketingPricing() {
               <div style={{ position: "relative", width: "52px", height: "52px" }}>
                 <span className="mk-wave"></span>
                 <span className="mk-wave mk-wv2"></span>
-                <div style={{ position: "absolute", inset: "0", borderRadius: "16px", background: "#0E1513", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "22px" }}>
+                <div style={{ position: "absolute", inset: "0", borderRadius: "16px", background: "#0E1020", color: "#FFFFFF", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "22px" }}>
 <EulivMark size={30} tone="bright" />
 </div>
               </div>
               {" "}
-              <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>
+              <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#3D66FF" }}>
                 {"ENTERPRISE"}
               </span>
               {" "}
@@ -275,7 +275,7 @@ export default function MarketingPricing() {
               {"Rolling Euliv out across the company?"}
             </h2>
             {" "}
-            <p style={{ margin: "0", color: "#A3B0AC", fontSize: "17px", lineHeight: "1.65", maxWidth: "560px" }}>
+            <p style={{ margin: "0", color: "#A1A3AD", fontSize: "17px", lineHeight: "1.65", maxWidth: "560px" }}>
               {"See Euliv answer your hardest question on your own sources, live. We’ll walk your team through security, governance and roll-out — and shape a plan around how you work."}
             </p>
             {" "}
@@ -283,8 +283,8 @@ export default function MarketingPricing() {
               {" "}
               {(V.entItems || []).map((e: any, i1: number) => (
                 <Fragment key={i1}>
-                  <div style={{ display: "flex", gap: "12px", alignItems: "flex-start", fontSize: "15.5px", lineHeight: "1.5", color: "#D5DEDB" }}>
-                    <span aria-hidden="true" style={{ flex: "none", width: "24px", height: "24px", borderRadius: "24px", border: "1px solid #24413A", background: "#132320", color: "#43E5A0", display: "grid", placeItems: "center", fontSize: "11px" }}>
+                  <div style={{ display: "flex", gap: "12px", alignItems: "flex-start", fontSize: "15.5px", lineHeight: "1.5", color: "#D4D5DB" }}>
+                    <span aria-hidden="true" style={{ flex: "none", width: "24px", height: "24px", borderRadius: "24px", border: "1px solid #2B3566", background: "#121628", color: "#3D66FF", display: "grid", placeItems: "center", fontSize: "11px" }}>
                       {"✓"}
                     </span>
                     <span>
@@ -298,7 +298,7 @@ export default function MarketingPricing() {
             {" "}
           </div>
           {" "}
-          <form onSubmit={onDemo} noValidate style={{ flex: "1 1 420px", border: "1px solid #2A3436", background: "#07090A", borderRadius: "24px", padding: "30px", display: "flex", flexDirection: "column", gap: "16px" }}>
+          <form onSubmit={onDemo} noValidate style={{ flex: "1 1 420px", border: "1px solid #2A2B33", background: "#0A0A0B", borderRadius: "24px", padding: "30px", display: "flex", flexDirection: "column", gap: "16px" }}>
             {" "}
             <span style={{ fontWeight: "800", fontSize: "22px", letterSpacing: "-0.02em" }}>
               {"Book an enterprise demo"}
@@ -306,28 +306,28 @@ export default function MarketingPricing() {
             {" "}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "12px" }}>
               {" "}
-              <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "13.5px", color: "#A3B0AC" }}>
+              <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "13.5px", color: "#A1A3AD" }}>
                 {"Full name"}
-                <input type="text" required autoComplete="name" value={demo.name} onChange={field("name")} placeholder="Your name" style={{ height: "48px", border: "1px solid #2A3436", borderRadius: "12px", padding: "0 14px", fontSize: "16px", fontFamily: "inherit", background: "#0B0F10", color: "#E8EEEC" }} />
+                <input type="text" required autoComplete="name" value={demo.name} onChange={field("name")} placeholder="Your name" style={{ height: "48px", border: "1px solid #2A2B33", borderRadius: "12px", padding: "0 14px", fontSize: "16px", fontFamily: "inherit", background: "#0C0C0E", color: "#EDEDEF" }} />
               </label>
               {" "}
-              <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "13.5px", color: "#A3B0AC" }}>
+              <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "13.5px", color: "#A1A3AD" }}>
                 {"Work email"}
-                <input type="email" required autoComplete="email" value={demo.email} onChange={field("email")} placeholder="you@company.com" style={{ height: "48px", border: "1px solid #2A3436", borderRadius: "12px", padding: "0 14px", fontSize: "16px", fontFamily: "inherit", background: "#0B0F10", color: "#E8EEEC" }} />
+                <input type="email" required autoComplete="email" value={demo.email} onChange={field("email")} placeholder="you@company.com" style={{ height: "48px", border: "1px solid #2A2B33", borderRadius: "12px", padding: "0 14px", fontSize: "16px", fontFamily: "inherit", background: "#0C0C0E", color: "#EDEDEF" }} />
               </label>
               {" "}
             </div>
             {" "}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "12px" }}>
               {" "}
-              <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "13.5px", color: "#A3B0AC" }}>
+              <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "13.5px", color: "#A1A3AD" }}>
                 {"Company"}
-                <input type="text" autoComplete="organization" value={demo.company} onChange={field("company")} placeholder="Company name" style={{ height: "48px", border: "1px solid #2A3436", borderRadius: "12px", padding: "0 14px", fontSize: "16px", fontFamily: "inherit", background: "#0B0F10", color: "#E8EEEC" }} />
+                <input type="text" autoComplete="organization" value={demo.company} onChange={field("company")} placeholder="Company name" style={{ height: "48px", border: "1px solid #2A2B33", borderRadius: "12px", padding: "0 14px", fontSize: "16px", fontFamily: "inherit", background: "#0C0C0E", color: "#EDEDEF" }} />
               </label>
               {" "}
-              <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "13.5px", color: "#A3B0AC" }}>
+              <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "13.5px", color: "#A1A3AD" }}>
                 {"Team size"}
-                <select value={demo.team_size} onChange={field("team_size")} style={{ height: "48px", border: "1px solid #2A3436", borderRadius: "12px", padding: "0 12px", fontSize: "16px", fontFamily: "inherit", background: "#0B0F10", color: "#E8EEEC" }}>
+                <select value={demo.team_size} onChange={field("team_size")} style={{ height: "48px", border: "1px solid #2A2B33", borderRadius: "12px", padding: "0 12px", fontSize: "16px", fontFamily: "inherit", background: "#0C0C0E", color: "#EDEDEF" }}>
                   <option>
                     {"50–200 people"}
                   </option>
@@ -345,19 +345,19 @@ export default function MarketingPricing() {
               {" "}
             </div>
             {" "}
-            <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "13.5px", color: "#A3B0AC" }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "13.5px", color: "#A1A3AD" }}>
               {"The question you want answered"}
-              <textarea rows={3} value={demo.question} onChange={field("question")} placeholder="e.g. Which campaigns bring customers who come back?" style={{ border: "1px solid #2A3436", borderRadius: "12px", padding: "12px 14px", fontSize: "16px", fontFamily: "inherit", resize: "vertical", background: "#0B0F10", color: "#E8EEEC" }}></textarea>
+              <textarea rows={3} value={demo.question} onChange={field("question")} placeholder="e.g. Which campaigns bring customers who come back?" style={{ border: "1px solid #2A2B33", borderRadius: "12px", padding: "12px 14px", fontSize: "16px", fontFamily: "inherit", resize: "vertical", background: "#0C0C0E", color: "#EDEDEF" }}></textarea>
             </label>
             {" "}
             {demoError && (
               <span role="alert" style={{ fontSize: "14px", color: "#FF7A6B" }}>{demoError}</span>
             )}
-            <button type="submit" disabled={demoState !== ""} style={{ height: "54px", border: "0", borderRadius: "999px", background: "#43E5A0", color: "#04140D", fontSize: "16.5px", fontWeight: "700", fontFamily: "inherit", cursor: demoState ? "default" : "pointer", opacity: demoState === "sending" ? 0.75 : 1, boxShadow: "0 18px 50px -18px rgba(67,229,160,.7)" }}>
+            <button type="submit" disabled={demoState !== ""} style={{ height: "54px", border: "0", borderRadius: "999px", background: "#3D66FF", color: "#FFFFFF", fontSize: "16.5px", fontWeight: "700", fontFamily: "inherit", cursor: demoState ? "default" : "pointer", opacity: demoState === "sending" ? 0.75 : 1, boxShadow: "0 18px 50px -18px rgba(61,102,255,.7)" }}>
               {demoState === "sent" ? "Request received ✓" : demoState === "sending" ? "Sending…" : "Book a demo"}
             </button>
             {" "}
-            <span className="mk-mono" style={{ fontSize: "11.5px", color: "#7F8C88" }}>
+            <span className="mk-mono" style={{ fontSize: "11.5px", color: "#8E909A" }}>
               {demoState === "sent" ? "Thank you — a product specialist will reply to confirm a time." : "A product specialist will reply to confirm a time."}
             </span>
             {" "}
@@ -369,7 +369,7 @@ export default function MarketingPricing() {
       {" "}
       <PlansFaq />
       {" "}
-      <footer style={{ borderTop: "1px solid #141A1B", padding: "56px 24px 36px", background: "#050707" }}>
+      <footer style={{ borderTop: "1px solid #141418", padding: "56px 24px 36px", background: "#050506" }}>
         {" "}
         <div style={{ maxWidth: "1280px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "40px" }}>
           {" "}
@@ -377,35 +377,35 @@ export default function MarketingPricing() {
             {" "}
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
               <EulivMark size={32} tone="bright" /> <Wordmark size={21} tone="bright" />
-              <span style={{ color: "#7F8C88", fontSize: "14.5px", marginLeft: "8px" }}>
+              <span style={{ color: "#8E909A", fontSize: "14.5px", marginLeft: "8px" }}>
                 {"Every source. One answer. Proven."}
               </span>
             </div>
             {" "}
             <div style={{ display: "flex", gap: "22px", flexWrap: "wrap", fontSize: "14.5px" }}>
-              <A href="/#see" style={{ color: "#A3B0AC" }}>
+              <A href="/#see" style={{ color: "#A1A3AD" }}>
                 {"Product"}
               </A>
-              <A href="/pricing" style={{ color: "#A3B0AC" }}>
+              <A href="/pricing" style={{ color: "#A1A3AD" }}>
                 {"Pricing"}
               </A>
-              <A href="/about" style={{ color: "#A3B0AC" }}>
+              <A href="/about" style={{ color: "#A1A3AD" }}>
                 {"About us"}
               </A>
-              <A href="/#security" style={{ color: "#A3B0AC" }}>
+              <A href="/#security" style={{ color: "#A1A3AD" }}>
                 {"Security"}
               </A>
-              <A href="/privacy" style={{ color: "#A3B0AC" }}>
+              <A href="/privacy" style={{ color: "#A1A3AD" }}>
                 {"Privacy"}
               </A>
-              <A href="/privacy" style={{ color: "#A3B0AC" }}>
+              <A href="/privacy" style={{ color: "#A1A3AD" }}>
                 {"Terms"}
               </A>
             </div>
             {" "}
           </div>
           {" "}
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "16px", justifyContent: "space-between", borderTop: "1px solid #141A1B", paddingTop: "24px", fontSize: "13.5px", color: "#7F8C88" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "16px", justifyContent: "space-between", borderTop: "1px solid #141418", paddingTop: "24px", fontSize: "13.5px", color: "#8E909A" }}>
             <span>
               {"© 2026 Euliv. All rights reserved."}
             </span>
@@ -422,7 +422,7 @@ export default function MarketingPricing() {
       {" "}
       <div className="mk-m-only">
         {" "}
-        <div style={{ position: "fixed", left: "0", right: "0", bottom: "0", zIndex: "40", padding: "10px 16px calc(10px + env(safe-area-inset-bottom, 0px))", background: "rgba(7,9,10,.9)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", borderTop: "1px solid #1F2729", display: "flex", alignItems: "center", gap: "12px" }}>
+        <div style={{ position: "fixed", left: "0", right: "0", bottom: "0", zIndex: "40", padding: "10px 16px calc(10px + env(safe-area-inset-bottom, 0px))", background: "rgba(10,10,11,.9)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", borderTop: "1px solid #1E1F24", display: "flex", alignItems: "center", gap: "12px" }}>
           {" "}
           <div style={{ flex: "1", minWidth: "0", display: "flex", flexDirection: "column", gap: "2px" }}>
             {" "}
@@ -430,13 +430,13 @@ export default function MarketingPricing() {
               {"Early access"}
             </span>
             {" "}
-            <span className="mk-mono" style={{ fontSize: "11px", color: "#7F8C88", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            <span className="mk-mono" style={{ fontSize: "11px", color: "#8E909A", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
               {"Every feature · free while we launch"}
             </span>
             {" "}
           </div>
           {" "}
-          <A href="/start" style={{ flex: "none", height: "50px", padding: "0 22px", borderRadius: "999px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "700", fontSize: "15.5px", boxShadow: "0 12px 34px -14px rgba(67,229,160,.8)" }}>
+          <A href="/start" style={{ flex: "none", height: "50px", padding: "0 22px", borderRadius: "999px", background: "#3D66FF", color: "#FFFFFF", display: "grid", placeItems: "center", fontWeight: "700", fontSize: "15.5px", boxShadow: "0 12px 34px -14px rgba(61,102,255,.8)" }}>
             {"Get started"}
           </A>
           {" "}

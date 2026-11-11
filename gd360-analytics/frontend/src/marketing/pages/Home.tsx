@@ -29,7 +29,7 @@ function vals(state: any, setState: (patch: any) => void): any {
         { cls: "n3", k: "03", t: "Splits the change into causes", d: "Traffic, conversion and basket separated; drivers ranked; the usual suspects ruled out." },
         { cls: "n4", k: "04", t: "Proves every figure", d: "14 numbers in the answer, 14 matched to their queries — before you ever see them." }
       ],
-      bars: [40, 62, 54, 78, 70, 92, 84, 104, 88].map((h, i) => ({ h, c: i === 7 ? "#43E5A0" : "#24413A", d: (i * 0.09).toFixed(2) + "s" })),
+      bars: [40, 62, 54, 78, 70, 92, 84, 104, 88].map((h, i) => ({ h, c: i === 7 ? "#3D66FF" : "#2B3566", d: (i * 0.09).toFixed(2) + "s" })),
       kinds: ["Churn", "Forecast many", "Segments", "Anomalies", "Key drivers", "Bought together", "Cohorts", "Uplift", "Price sensitivity", "Sentiment"],
       story: [
         { cls: "tl1", time: "09:02", t: "The alert", d: "Revenue is 12% below last month. An automation noticed first and posted to #revenue." },
@@ -62,7 +62,7 @@ function vals(state: any, setState: (patch: any) => void): any {
     R.openMenu = () => setState({ menu: true });
     R.closeMenu = () => setState({ menu: false });
     R.menuLinks = [{ t: "Product", href: "#see" }, { t: "Platform", href: "#platform" }, { t: "Solutions", href: "#teams" }, { t: "Security", href: "#security" }, { t: "About", href: "/about" }].map((x, i) => ({ ...x, cls: "ml" + (i + 1) }));
-    R.mSources = [["Snowflake", "Sf", "LIVE"], ["Google Ads", "GA", "SYNCED"], ["GA4", "G4", "SYNCED"], ["Shopify", "Sh", "SYNCED"]].map(([n, m, mode], i) => ({ n, m, mode, cls: "ms" + (i + 1), ink: mode === "LIVE" ? "#43E5A0" : "#7AA7FF" }));
+    R.mSources = [["Snowflake", "Sf", "LIVE"], ["Google Ads", "GA", "SYNCED"], ["GA4", "G4", "SYNCED"], ["Shopify", "Sh", "SYNCED"]].map(([n, m, mode], i) => ({ n, m, mode, cls: "ms" + (i + 1), ink: mode === "LIVE" ? "#3D66FF" : "#7AA7FF" }));
     return R;
   
 }
@@ -76,13 +76,13 @@ export default function MarketingHome() {
   const setState = (patch: any) => setS((prev: any) => ({ ...prev, ...patch }));
   const V = vals(state, setState);
   return (
-    <div className="mkt-home" style={{ fontFamily: "Geist, 'Helvetica Neue', system-ui, sans-serif", color: "#E8EEEC", background: "#07090A", minHeight: "100vh", overflowX: "clip" }}>
+    <div className="mkt-home" style={{ fontFamily: "Geist, 'Helvetica Neue', system-ui, sans-serif", color: "#EDEDEF", background: "#0A0A0B", minHeight: "100vh", overflowX: "clip" }}>
       {" "}
-      <header className="mk-site-head" style={{ position: "relative", zIndex: "5", borderBottom: "1px solid #141A1B", background: "rgba(7,9,10,.82)" }}>
+      <header className="mk-site-head" style={{ position: "relative", zIndex: "5", borderBottom: "1px solid #141418", background: "rgba(10,10,11,.82)" }}>
         {" "}
         <nav className="mk-site-nav" aria-label="Main" style={{ maxWidth: "1280px", margin: "0 auto", padding: "16px 24px", display: "flex", alignItems: "center", gap: "30px", flexWrap: "wrap" }}>
           {" "}
-          <A href="/" style={{ display: "flex", alignItems: "center", gap: "10px", color: "#E8EEEC" }}>
+          <A href="/" style={{ display: "flex", alignItems: "center", gap: "10px", color: "#EDEDEF" }}>
             {" "}
             <EulivMark size={34} tone="bright" /> <Wordmark size={22} tone="bright" />
             {" "}
@@ -90,23 +90,23 @@ export default function MarketingHome() {
           {" "}
           <div className="mk-navlinks mk-d-only" style={{ display: "flex", gap: "26px", flexWrap: "wrap", fontSize: "15px", flex: "1 1 auto" }}>
             {" "}
-            <A href="#see" style={{ color: "#A3B0AC" }}>
+            <A href="#see" style={{ color: "#A1A3AD" }}>
               {"Product"}
             </A>
             {" "}
-            <A href="#platform" style={{ color: "#A3B0AC" }}>
+            <A href="#platform" style={{ color: "#A1A3AD" }}>
               {"Platform"}
             </A>
             {" "}
-            <A href="#teams" style={{ color: "#A3B0AC" }}>
+            <A href="#teams" style={{ color: "#A1A3AD" }}>
               {"Solutions"}
             </A>
             {" "}
-            <A href="#security" style={{ color: "#A3B0AC" }}>
+            <A href="#security" style={{ color: "#A1A3AD" }}>
               {"Security"}
             </A>
             {" "}
-            <A href="/about" style={{ color: "#A3B0AC" }}>
+            <A href="/about" style={{ color: "#A1A3AD" }}>
               {"About"}
             </A>
             {" "}
@@ -114,11 +114,11 @@ export default function MarketingHome() {
           {" "}
           <div className="mk-d-only" style={{ display: "flex", gap: "8px", alignItems: "center" }}>
             {" "}
-            <A href="/login" style={{ color: "#E8EEEC", fontSize: "15px", padding: "10px 14px" }}>
+            <A href="/login" style={{ color: "#EDEDEF", fontSize: "15px", padding: "10px 14px" }}>
               {"Sign in"}
             </A>
             {" "}
-            <A href="/start" style={{ background: "#43E5A0", color: "#04140D", fontWeight: "700", fontSize: "15px", padding: "12px 20px", borderRadius: "999px", minHeight: "44px", boxSizing: "border-box", display: "inline-flex", alignItems: "center", gap: "8px" }}>
+            <A href="/start" style={{ background: "#3D66FF", color: "#FFFFFF", fontWeight: "700", fontSize: "15px", padding: "12px 20px", borderRadius: "999px", minHeight: "44px", boxSizing: "border-box", display: "inline-flex", alignItems: "center", gap: "8px" }}>
               {"Get started "}
               <span aria-hidden="true">
                 {"→"}
@@ -131,9 +131,9 @@ export default function MarketingHome() {
             {" "}
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               {" "}
-              <button type="button" aria-label="Open menu" aria-expanded={V.menuExpanded} onClick={V.openMenu} style={{ width: "44px", height: "44px", borderRadius: "12px", border: "1px solid #2A3436", background: "#0E1213", display: "grid", placeItems: "center", cursor: "pointer", padding: "0" }}>
+              <button type="button" aria-label="Open menu" aria-expanded={V.menuExpanded} onClick={V.openMenu} style={{ width: "44px", height: "44px", borderRadius: "12px", border: "1px solid #2A2B33", background: "#0F0F11", display: "grid", placeItems: "center", cursor: "pointer", padding: "0" }}>
                 <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
-                  <path d="M2.5 5h13M2.5 9h13M2.5 13h8" stroke="#E8EEEC" strokeWidth="1.7" strokeLinecap="round"></path>
+                  <path d="M2.5 5h13M2.5 9h13M2.5 13h8" stroke="#EDEDEF" strokeWidth="1.7" strokeLinecap="round"></path>
                 </svg>
               </button>
               {" "}
@@ -150,17 +150,17 @@ export default function MarketingHome() {
           {" "}
           <div className="mk-m-only">
             {" "}
-            <div className="mk-msheet" role="dialog" aria-modal="true" aria-label="Menu" style={{ position: "fixed", inset: "0", zIndex: "80", background: "rgba(5,7,7,.97)", backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)", display: "flex", flexDirection: "column", padding: "10px 16px calc(20px + env(safe-area-inset-bottom, 0px))", overflowY: "auto" }}>
+            <div className="mk-msheet" role="dialog" aria-modal="true" aria-label="Menu" style={{ position: "fixed", inset: "0", zIndex: "80", background: "rgba(5,5,6,.97)", backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)", display: "flex", flexDirection: "column", padding: "10px 16px calc(20px + env(safe-area-inset-bottom, 0px))", overflowY: "auto" }}>
               {" "}
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: "48px" }}>
                 {" "}
-                <A href="/" onClick={V.closeMenu} style={{ display: "flex", alignItems: "center", gap: "10px", color: "#E8EEEC" }}>
+                <A href="/" onClick={V.closeMenu} style={{ display: "flex", alignItems: "center", gap: "10px", color: "#EDEDEF" }}>
                   <EulivMark size={34} tone="bright" /> <Wordmark size={22} tone="bright" />
                 </A>
                 {" "}
-                <button type="button" aria-label="Close menu" onClick={V.closeMenu} style={{ width: "44px", height: "44px", borderRadius: "12px", border: "1px solid #2A3436", background: "#0E1213", display: "grid", placeItems: "center", cursor: "pointer", padding: "0" }}>
+                <button type="button" aria-label="Close menu" onClick={V.closeMenu} style={{ width: "44px", height: "44px", borderRadius: "12px", border: "1px solid #2A2B33", background: "#0F0F11", display: "grid", placeItems: "center", cursor: "pointer", padding: "0" }}>
                   <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
-                    <path d="M4 4l10 10M14 4L4 14" stroke="#E8EEEC" strokeWidth="1.7" strokeLinecap="round"></path>
+                    <path d="M4 4l10 10M14 4L4 14" stroke="#EDEDEF" strokeWidth="1.7" strokeLinecap="round"></path>
                   </svg>
                 </button>
                 {" "}
@@ -171,9 +171,9 @@ export default function MarketingHome() {
                 {(V.menuLinks || []).map((l: any, i1: number) => (
                   <Fragment key={i1}>
                     {" "}
-                    <A href={l.href} onClick={V.closeMenu} className={`mk-mlink ${l.cls ? "mk-" + l.cls : ""}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "15px 0", borderBottom: "1px solid #141A1B", color: "#E8EEEC", fontSize: "30px", fontWeight: "800", letterSpacing: "-0.035em" }}>
+                    <A href={l.href} onClick={V.closeMenu} className={`mk-mlink ${l.cls ? "mk-" + l.cls : ""}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "15px 0", borderBottom: "1px solid #141418", color: "#EDEDEF", fontSize: "30px", fontWeight: "800", letterSpacing: "-0.035em" }}>
                       {l.t}
-                      <span aria-hidden="true" style={{ color: "#43E5A0", fontSize: "20px" }}>
+                      <span aria-hidden="true" style={{ color: "#3D66FF", fontSize: "20px" }}>
                         {"→"}
                       </span>
                     </A>
@@ -185,15 +185,15 @@ export default function MarketingHome() {
               {" "}
               <div style={{ marginTop: "auto", paddingTop: "28px", display: "flex", flexDirection: "column", gap: "10px" }}>
                 {" "}
-                <A href="/start" onClick={V.closeMenu} style={{ height: "54px", borderRadius: "999px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "700", fontSize: "16.5px" }}>
+                <A href="/start" onClick={V.closeMenu} style={{ height: "54px", borderRadius: "999px", background: "#3D66FF", color: "#FFFFFF", display: "grid", placeItems: "center", fontWeight: "700", fontSize: "16.5px" }}>
                   {"Get started"}
                 </A>
                 {" "}
-                <A href="/login" onClick={V.closeMenu} style={{ height: "54px", borderRadius: "999px", border: "1px solid #2A3436", color: "#E8EEEC", display: "grid", placeItems: "center", fontWeight: "600", fontSize: "16.5px" }}>
+                <A href="/login" onClick={V.closeMenu} style={{ height: "54px", borderRadius: "999px", border: "1px solid #2A2B33", color: "#EDEDEF", display: "grid", placeItems: "center", fontWeight: "600", fontSize: "16.5px" }}>
                   {"Sign in"}
                 </A>
                 {" "}
-                <span className="mk-mono" style={{ textAlign: "center", fontSize: "11.5px", color: "#7F8C88", marginTop: "8px", letterSpacing: "0.06em" }}>
+                <span className="mk-mono" style={{ textAlign: "center", fontSize: "11.5px", color: "#8E909A", marginTop: "8px", letterSpacing: "0.06em" }}>
                   {"EVERY SOURCE. ONE ANSWER. PROVEN."}
                 </span>
                 {" "}
@@ -210,15 +210,15 @@ export default function MarketingHome() {
         {" "}
         <div className="mk-gridbg" style={{ position: "absolute", inset: "0", pointerEvents: "none" }}></div>
         {" "}
-        <div className="mk-aur mk-aur1" style={{ left: "8%", top: "60px", width: "520px", height: "520px", background: "rgba(67,229,160,.16)" }}></div>
+        <div className="mk-aur mk-aur1" style={{ left: "8%", top: "60px", width: "520px", height: "520px", background: "rgba(61,102,255,.16)" }}></div>
         {" "}
         <div className="mk-aur mk-aur2" style={{ right: "6%", top: "220px", width: "460px", height: "460px", background: "rgba(122,167,255,.10)" }}></div>
         {" "}
         <div style={{ position: "relative", maxWidth: "1100px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "28px", alignItems: "center" }}>
           {" "}
-          <A href="/start" className="mk-w mk-d1" style={{ display: "inline-flex", alignItems: "center", gap: "10px", border: "1px solid #24413A", background: "rgba(19,35,32,.8)", color: "#BDF3DA", fontSize: "13.5px", padding: "7px 16px 7px 7px", borderRadius: "999px" }}>
+          <A href="/start" className="mk-w mk-d1" style={{ display: "inline-flex", alignItems: "center", gap: "10px", border: "1px solid #2B3566", background: "rgba(14,22,51,.8)", color: "#C9D4FF", fontSize: "13.5px", padding: "7px 16px 7px 7px", borderRadius: "999px" }}>
             {" "}
-            <span className="mk-mono" style={{ background: "#43E5A0", color: "#04140D", fontSize: "11px", fontWeight: "600", padding: "3px 10px", borderRadius: "999px" }}>
+            <span className="mk-mono" style={{ background: "#3D66FF", color: "#FFFFFF", fontSize: "11px", fontWeight: "600", padding: "3px 10px", borderRadius: "999px" }}>
               {"EARLY ACCESS"}
             </span>
             {" Every feature, free while we launch "}
@@ -249,18 +249,18 @@ export default function MarketingHome() {
             <span className="sr-only">{" Euliv, the AI data analyst for companies without a data team."}</span>
           </h1>
           {" "}
-          <p className="mk-w mk-d5" style={{ margin: "0", fontSize: "clamp(17px, 1.8vw, 21px)", lineHeight: "1.6", color: "#A3B0AC", maxWidth: "720px" }}>
+          <p className="mk-w mk-d5" style={{ margin: "0", fontSize: "clamp(17px, 1.8vw, 21px)", lineHeight: "1.6", color: "#A1A3AD", maxWidth: "720px" }}>
             {"Euliv is the AI analyst for companies that run on data but don’t have a data team. Ask in plain words — it plans the analysis across your warehouse, databases and apps, runs it where your data lives, and proves every number it gives you."}
           </p>
           {" "}
           <div className="mk-m-cta mk-w mk-d6" style={{ display: "flex", gap: "12px", flexWrap: "wrap", justifyContent: "center" }}>
             {" "}
-            <A href="/start" style={{ background: "#43E5A0", color: "#04140D", fontWeight: "700", fontSize: "16.5px", padding: "17px 30px", borderRadius: "999px", boxShadow: "0 18px 50px -18px rgba(67,229,160,.7)" }}>
+            <A href="/start" style={{ background: "#3D66FF", color: "#FFFFFF", fontWeight: "700", fontSize: "16.5px", padding: "17px 30px", borderRadius: "999px", boxShadow: "0 18px 50px -18px rgba(61,102,255,.7)" }}>
               {"Get early access"}
             </A>
             {" "}
-            <A href="#see" style={{ border: "1px solid #2A3436", color: "#E8EEEC", fontWeight: "500", fontSize: "16.5px", padding: "17px 28px", borderRadius: "999px", background: "rgba(14,18,19,.7)", display: "inline-flex", alignItems: "center", gap: "10px" }}>
-              <span aria-hidden="true" style={{ width: "22px", height: "22px", borderRadius: "22px", background: "#132320", display: "grid", placeItems: "center", fontSize: "9px", color: "#43E5A0" }}>
+            <A href="#see" style={{ border: "1px solid #2A2B33", color: "#EDEDEF", fontWeight: "500", fontSize: "16.5px", padding: "17px 28px", borderRadius: "999px", background: "rgba(15,15,17,.7)", display: "inline-flex", alignItems: "center", gap: "10px" }}>
+              <span aria-hidden="true" style={{ width: "22px", height: "22px", borderRadius: "22px", background: "#121628", display: "grid", placeItems: "center", fontSize: "9px", color: "#3D66FF" }}>
                 {"▶"}
               </span>
               {"Watch it think"}
@@ -268,9 +268,9 @@ export default function MarketingHome() {
             {" "}
           </div>
           {" "}
-          <div className="mk-halo mk-w mk-d6" style={{ marginTop: "20px", width: "100%", maxWidth: "900px", borderRadius: "22px", background: "rgba(11,15,16,.92)", border: "1px solid #24413A", padding: "clamp(16px, 2.2vw, 24px) clamp(16px, 2.2vw, 26px)", display: "flex", alignItems: "center", gap: "16px", textAlign: "left", boxSizing: "border-box" }}>
+          <div className="mk-halo mk-w mk-d6" style={{ marginTop: "20px", width: "100%", maxWidth: "900px", borderRadius: "22px", background: "rgba(11,15,16,.92)", border: "1px solid #2B3566", padding: "clamp(16px, 2.2vw, 24px) clamp(16px, 2.2vw, 26px)", display: "flex", alignItems: "center", gap: "16px", textAlign: "left", boxSizing: "border-box" }}>
             {" "}
-            <span aria-hidden="true" style={{ flex: "none", width: "40px", height: "40px", borderRadius: "12px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "800", fontSize: "18px" }}>
+            <span aria-hidden="true" style={{ flex: "none", width: "40px", height: "40px", borderRadius: "12px", background: "#3D66FF", color: "#FFFFFF", display: "grid", placeItems: "center", fontWeight: "800", fontSize: "18px" }}>
               {"✦"}
             </span>
             {" "}
@@ -302,7 +302,7 @@ export default function MarketingHome() {
               {" "}
             </span>
             {" "}
-            <span className="mk-mono mk-cmd-pill" style={{ flex: "none", fontSize: "12px", color: "#7F8C88", border: "1px solid #1F2729", padding: "6px 10px", borderRadius: "8px" }}>
+            <span className="mk-mono mk-cmd-pill" style={{ flex: "none", fontSize: "12px", color: "#8E909A", border: "1px solid #1E1F24", padding: "6px 10px", borderRadius: "8px" }}>
               {"All sources ⏎"}
             </span>
             {" "}
@@ -314,16 +314,16 @@ export default function MarketingHome() {
           {" "}
           <div style={{ position: "relative", maxWidth: "440px", margin: "40px auto 0", textAlign: "left", display: "flex", flexDirection: "column", gap: "8px" }}>
             {" "}
-            <span className="mk-mono" style={{ fontSize: "11px", letterSpacing: "0.14em", color: "#7F8C88", marginBottom: "4px" }}>
+            <span className="mk-mono" style={{ fontSize: "11px", letterSpacing: "0.14em", color: "#8E909A", marginBottom: "4px" }}>
               {"YOUR SOURCES · SAMPLE COMPANY"}
             </span>
             {" "}
             {(V.mSources || []).map((c: any, i1: number) => (
               <Fragment key={i1}>
                 {" "}
-                <div className={`mk-msrc ${c.cls ? "mk-" + c.cls : ""}`} style={{ display: "flex", alignItems: "center", gap: "12px", border: "1px solid #1F2729", background: "#0B0F10", borderRadius: "14px", padding: "10px 12px" }}>
+                <div className={`mk-msrc ${c.cls ? "mk-" + c.cls : ""}`} style={{ display: "flex", alignItems: "center", gap: "12px", border: "1px solid #1E1F24", background: "#0C0C0E", borderRadius: "14px", padding: "10px 12px" }}>
                   {" "}
-                  <span className="mk-mono" style={{ flex: "none", width: "32px", height: "32px", borderRadius: "9px", display: "grid", placeItems: "center", fontSize: "11px", fontWeight: "600", background: "#132320", border: "1px solid #24413A", color: "#43E5A0" }}>
+                  <span className="mk-mono" style={{ flex: "none", width: "32px", height: "32px", borderRadius: "9px", display: "grid", placeItems: "center", fontSize: "11px", fontWeight: "600", background: "#121628", border: "1px solid #2B3566", color: "#3D66FF" }}>
                     {c.m}
                   </span>
                   {" "}
@@ -340,14 +340,14 @@ export default function MarketingHome() {
               </Fragment>
             ))}
             {" "}
-            <div style={{ position: "relative", height: "56px", width: "2px", margin: "0 auto", background: "linear-gradient(#1F2729, #43E5A0)" }}>
+            <div style={{ position: "relative", height: "56px", width: "2px", margin: "0 auto", background: "linear-gradient(#1E1F24, #3D66FF)" }}>
               <span className="mk-mdrop"></span>
               <span className="mk-mdrop mk-md2"></span>
             </div>
             {" "}
-            <div className="mk-mans" style={{ border: "1px solid #24413A", background: "radial-gradient(ellipse at 100% 0%, rgba(67,229,160,.18), rgba(7,9,10,0) 60%), #0E1A16", borderRadius: "18px", padding: "18px", display: "flex", flexDirection: "column", gap: "8px" }}>
+            <div className="mk-mans" style={{ border: "1px solid #2B3566", background: "radial-gradient(ellipse at 100% 0%, rgba(61,102,255,.18), rgba(10,10,11,0) 60%), #0E1A16", borderRadius: "18px", padding: "18px", display: "flex", flexDirection: "column", gap: "8px" }}>
               {" "}
-              <span className="mk-mono" style={{ fontSize: "11px", letterSpacing: "0.12em", color: "#43E5A0" }}>
+              <span className="mk-mono" style={{ fontSize: "11px", letterSpacing: "0.12em", color: "#3D66FF" }}>
                 {"ONE ANSWER"}
               </span>
               {" "}
@@ -355,11 +355,11 @@ export default function MarketingHome() {
                 {"Revenue is down $58.5k (−12.4%)"}
               </span>
               {" "}
-              <span style={{ color: "#A3B0AC", fontSize: "14.5px", lineHeight: "1.55" }}>
+              <span style={{ color: "#A1A3AD", fontSize: "14.5px", lineHeight: "1.55" }}>
                 {"Mostly the Brand – US budget cut on 30 Sep. Meta, prices, stock and refunds ruled out."}
               </span>
               {" "}
-              <span className="mk-mono" style={{ alignSelf: "flex-start", marginTop: "4px", fontSize: "11px", color: "#43E5A0", border: "1px solid #24413A", background: "#132320", padding: "5px 9px", borderRadius: "6px" }}>
+              <span className="mk-mono" style={{ alignSelf: "flex-start", marginTop: "4px", fontSize: "11px", color: "#3D66FF", border: "1px solid #2B3566", background: "#121628", padding: "5px 9px", borderRadius: "6px" }}>
                 {"✓ 14 of 14 figures proven"}
               </span>
               {" "}
@@ -389,8 +389,8 @@ export default function MarketingHome() {
                 <div style={{ position: "absolute", left: `${c.x}%`, top: `${c.y}%`, transform: "translate(-50%, -50%)" }}>
                   {" "}
                   <div className="mk-un3">
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: "8px", background: "#0B0F10", border: "1px solid #1F2729", borderRadius: "999px", padding: "6px 13px 6px 6px", fontSize: "13px", whiteSpace: "nowrap", color: "#E8EEEC" }}>
-                      <span className="mk-mono" style={{ width: "24px", height: "24px", borderRadius: "24px", display: "grid", placeItems: "center", fontSize: "10px", fontWeight: "600", background: "#132320", border: "1px solid #24413A", color: "#43E5A0" }}>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "8px", background: "#0C0C0E", border: "1px solid #1E1F24", borderRadius: "999px", padding: "6px 13px 6px 6px", fontSize: "13px", whiteSpace: "nowrap", color: "#EDEDEF" }}>
+                      <span className="mk-mono" style={{ width: "24px", height: "24px", borderRadius: "24px", display: "grid", placeItems: "center", fontSize: "10px", fontWeight: "600", background: "#121628", border: "1px solid #2B3566", color: "#3D66FF" }}>
                         {c.m}
                       </span>
                       <span className="mk-chip-label">
@@ -414,8 +414,8 @@ export default function MarketingHome() {
                 <div style={{ position: "absolute", left: `${c.x}%`, top: `${c.y}%`, transform: "translate(-50%, -50%)" }}>
                   {" "}
                   <div className="mk-un2">
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: "8px", background: "#0B0F10", border: "1px solid #1F2729", borderRadius: "999px", padding: "6px 13px 6px 6px", fontSize: "13px", whiteSpace: "nowrap", color: "#E8EEEC" }}>
-                      <span className="mk-mono" style={{ width: "24px", height: "24px", borderRadius: "24px", display: "grid", placeItems: "center", fontSize: "10px", fontWeight: "600", background: "#132320", border: "1px solid #24413A", color: "#43E5A0" }}>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "8px", background: "#0C0C0E", border: "1px solid #1E1F24", borderRadius: "999px", padding: "6px 13px 6px 6px", fontSize: "13px", whiteSpace: "nowrap", color: "#EDEDEF" }}>
+                      <span className="mk-mono" style={{ width: "24px", height: "24px", borderRadius: "24px", display: "grid", placeItems: "center", fontSize: "10px", fontWeight: "600", background: "#121628", border: "1px solid #2B3566", color: "#3D66FF" }}>
                         {c.m}
                       </span>
                       <span className="mk-chip-label">
@@ -439,8 +439,8 @@ export default function MarketingHome() {
                 <div style={{ position: "absolute", left: `${c.x}%`, top: `${c.y}%`, transform: "translate(-50%, -50%)" }}>
                   {" "}
                   <div className="mk-un1">
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: "8px", background: "#132320", border: "1px solid #24413A", borderRadius: "999px", padding: "6px 13px 6px 6px", fontSize: "13px", whiteSpace: "nowrap", color: "#E8EEEC" }}>
-                      <span className="mk-mono" style={{ width: "24px", height: "24px", borderRadius: "24px", display: "grid", placeItems: "center", fontSize: "10px", fontWeight: "700", background: "#43E5A0", color: "#04140D" }}>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "8px", background: "#121628", border: "1px solid #2B3566", borderRadius: "999px", padding: "6px 13px 6px 6px", fontSize: "13px", whiteSpace: "nowrap", color: "#EDEDEF" }}>
+                      <span className="mk-mono" style={{ width: "24px", height: "24px", borderRadius: "24px", display: "grid", placeItems: "center", fontSize: "10px", fontWeight: "700", background: "#3D66FF", color: "#FFFFFF" }}>
                         {c.m}
                       </span>
                       <span className="mk-chip-label">
@@ -462,13 +462,13 @@ export default function MarketingHome() {
             <span className="mk-wave mk-wv2"></span>
             <span className="mk-wave mk-wv3"></span>
             {" "}
-            <div className="mk-core" style={{ position: "absolute", inset: "0", borderRadius: "50%", background: "radial-gradient(circle at 35% 30%, #1A4636, #0B0F10 70%)", border: "1px solid #2E5E4C", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "8px", padding: "12px", boxSizing: "border-box" }}>
+            <div className="mk-core" style={{ position: "absolute", inset: "0", borderRadius: "50%", background: "radial-gradient(circle at 35% 30%, #16286E, #0C0C0E 70%)", border: "1px solid #2B3566", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "8px", padding: "12px", boxSizing: "border-box" }}>
               {" "}
-              <span style={{ width: "clamp(30px, 4vw, 48px)", height: "clamp(30px, 4vw, 48px)", borderRadius: "14px", background: "#0E1513", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "clamp(15px, 2vw, 24px)" }}>
+              <span style={{ width: "clamp(30px, 4vw, 48px)", height: "clamp(30px, 4vw, 48px)", borderRadius: "14px", background: "#0E1020", color: "#FFFFFF", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "clamp(15px, 2vw, 24px)" }}>
 <EulivMark size={28} tone="bright" />
 </span>
               {" "}
-              <span className="mk-mono" style={{ fontSize: "clamp(9px, 1.1vw, 12px)", color: "#43E5A0" }}>
+              <span className="mk-mono" style={{ fontSize: "clamp(9px, 1.1vw, 12px)", color: "#3D66FF" }}>
                 {"one answer"}
               </span>
               {" "}
@@ -482,7 +482,7 @@ export default function MarketingHome() {
       {" "}
       <section aria-label="Connectors" style={{ padding: "56px 0 64px" }}>
         {" "}
-        <p className="mk-mono" style={{ textAlign: "center", margin: "0 0 28px", fontSize: "12.5px", letterSpacing: "0.16em", color: "#7F8C88" }}>
+        <p className="mk-mono" style={{ textAlign: "center", margin: "0 0 28px", fontSize: "12.5px", letterSpacing: "0.16em", color: "#8E909A" }}>
           {"WORKS WITH THE STACK YOU ALREADY RUN"}
         </p>
         {" "}
@@ -491,8 +491,8 @@ export default function MarketingHome() {
           <div className="mk-marquee">
             {(V.rowA || []).map((c: any, i1: number) => (
               <Fragment key={i1}>
-                <span style={{ display: "inline-flex", alignItems: "center", gap: "10px", border: "1px solid #1A2224", background: "#0B0F10", borderRadius: "12px", padding: "10px 16px 10px 10px", fontSize: "15px", whiteSpace: "nowrap" }}>
-                  <span className="mk-mono" style={{ width: "28px", height: "28px", borderRadius: "8px", display: "grid", placeItems: "center", fontSize: "11px", fontWeight: "600", background: "#132320", border: "1px solid #24413A", color: "#43E5A0" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: "10px", border: "1px solid #1A1B20", background: "#0C0C0E", borderRadius: "12px", padding: "10px 16px 10px 10px", fontSize: "15px", whiteSpace: "nowrap" }}>
+                  <span className="mk-mono" style={{ width: "28px", height: "28px", borderRadius: "8px", display: "grid", placeItems: "center", fontSize: "11px", fontWeight: "600", background: "#121628", border: "1px solid #2B3566", color: "#3D66FF" }}>
                     {c.m}
                   </span>
                   {c.n}
@@ -504,8 +504,8 @@ export default function MarketingHome() {
           <div className="mk-marquee mk-rev">
             {(V.rowB || []).map((c: any, i1: number) => (
               <Fragment key={i1}>
-                <span style={{ display: "inline-flex", alignItems: "center", gap: "10px", border: "1px solid #1A2224", background: "#0B0F10", borderRadius: "12px", padding: "10px 16px 10px 10px", fontSize: "15px", whiteSpace: "nowrap" }}>
-                  <span className="mk-mono" style={{ width: "28px", height: "28px", borderRadius: "8px", display: "grid", placeItems: "center", fontSize: "11px", fontWeight: "600", background: "#132320", border: "1px solid #24413A", color: "#43E5A0" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: "10px", border: "1px solid #1A1B20", background: "#0C0C0E", borderRadius: "12px", padding: "10px 16px 10px 10px", fontSize: "15px", whiteSpace: "nowrap" }}>
+                  <span className="mk-mono" style={{ width: "28px", height: "28px", borderRadius: "8px", display: "grid", placeItems: "center", fontSize: "11px", fontWeight: "600", background: "#121628", border: "1px solid #2B3566", color: "#3D66FF" }}>
                     {c.m}
                   </span>
                   {c.n}
@@ -518,13 +518,13 @@ export default function MarketingHome() {
         {" "}
       </section>
       {" "}
-      <section className="mk-m-sec" id="see" style={{ padding: "104px 24px", borderTop: "1px solid #141A1B" }}>
+      <section className="mk-m-sec" id="see" style={{ padding: "104px 24px", borderTop: "1px solid #141418" }}>
         {" "}
         <div style={{ maxWidth: "1280px", margin: "0 auto", display: "flex", flexWrap: "wrap", gap: "56px", alignItems: "center" }}>
           {" "}
           <div style={{ flex: "1 1 380px", minWidth: "0", display: "flex", flexDirection: "column", gap: "22px" }}>
             {" "}
-            <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>
+            <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#3D66FF" }}>
               {"WATCH IT THINK"}
             </span>
             {" "}
@@ -537,9 +537,9 @@ export default function MarketingHome() {
               {(V.narr || []).map((n: any, i1: number) => (
                 <Fragment key={i1}>
                   {" "}
-                  <div className={`mk-narr ${n.cls ? "mk-" + n.cls : ""}`} style={{ border: "1px solid #1F2729", borderRadius: "16px", padding: "16px 18px", display: "grid", gridTemplateColumns: "36px minmax(0, 1fr)", gap: "12px" }}>
+                  <div className={`mk-narr ${n.cls ? "mk-" + n.cls : ""}`} style={{ border: "1px solid #1E1F24", borderRadius: "16px", padding: "16px 18px", display: "grid", gridTemplateColumns: "36px minmax(0, 1fr)", gap: "12px" }}>
                     {" "}
-                    <span className="mk-mono" style={{ fontSize: "13px", color: "#43E5A0", paddingTop: "2px" }}>
+                    <span className="mk-mono" style={{ fontSize: "13px", color: "#3D66FF", paddingTop: "2px" }}>
                       {n.k}
                     </span>
                     {" "}
@@ -547,7 +547,7 @@ export default function MarketingHome() {
                       <span style={{ fontWeight: "700", fontSize: "17px" }}>
                         {n.t}
                       </span>
-                      <span style={{ color: "#A3B0AC", fontSize: "14.5px", lineHeight: "1.55" }}>
+                      <span style={{ color: "#A1A3AD", fontSize: "14.5px", lineHeight: "1.55" }}>
                         {n.d}
                       </span>
                     </span>
@@ -563,15 +563,15 @@ export default function MarketingHome() {
           {" "}
           <div style={{ flex: "1 1 560px", minWidth: "0" }}>
             {" "}
-            <div style={{ borderRadius: "24px", background: "#0B0F10", border: "1px solid #1F2729", overflow: "hidden", boxShadow: "0 0 0 1px rgba(67,229,160,.12), 0 50px 140px -50px rgba(67,229,160,.45)" }}>
+            <div style={{ borderRadius: "24px", background: "#0C0C0E", border: "1px solid #1E1F24", overflow: "hidden", boxShadow: "0 0 0 1px rgba(61,102,255,.12), 0 50px 140px -50px rgba(61,102,255,.45)" }}>
               {" "}
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "13px 16px", borderBottom: "1px solid #141A1B" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "13px 16px", borderBottom: "1px solid #141418" }}>
                 {" "}
-                <span style={{ width: "10px", height: "10px", borderRadius: "10px", background: "#2A3436" }}></span>
-                <span style={{ width: "10px", height: "10px", borderRadius: "10px", background: "#2A3436" }}></span>
-                <span style={{ width: "10px", height: "10px", borderRadius: "10px", background: "#2A3436" }}></span>
+                <span style={{ width: "10px", height: "10px", borderRadius: "10px", background: "#2A2B33" }}></span>
+                <span style={{ width: "10px", height: "10px", borderRadius: "10px", background: "#2A2B33" }}></span>
+                <span style={{ width: "10px", height: "10px", borderRadius: "10px", background: "#2A2B33" }}></span>
                 {" "}
-                <span className="mk-mono" style={{ marginLeft: "10px", fontSize: "11.5px", color: "#7F8C88" }}>
+                <span className="mk-mono" style={{ marginLeft: "10px", fontSize: "11.5px", color: "#8E909A" }}>
                   {"Euliv · Sample company, Lumen Home"}
                 </span>
                 {" "}
@@ -579,9 +579,9 @@ export default function MarketingHome() {
               {" "}
               <div style={{ padding: "20px", display: "flex", flexDirection: "column", gap: "16px" }}>
                 {" "}
-                <div style={{ border: "1px solid #2A3436", background: "#0E1213", borderRadius: "14px", padding: "14px 16px", display: "flex", alignItems: "center", gap: "12px" }}>
+                <div style={{ border: "1px solid #2A2B33", background: "#0F0F11", borderRadius: "14px", padding: "14px 16px", display: "flex", alignItems: "center", gap: "12px" }}>
                   {" "}
-                  <span aria-hidden="true" style={{ color: "#43E5A0" }}>
+                  <span aria-hidden="true" style={{ color: "#3D66FF" }}>
                     {"✦"}
                   </span>
                   {" "}
@@ -596,15 +596,15 @@ export default function MarketingHome() {
                 {" "}
                 <div className="mk-m-steps" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "8px" }}>
                   {" "}
-                  <div className="mk-step mk-s1 mk-mono" style={{ border: "1px solid #1F2729", borderRadius: "10px", padding: "10px 12px", fontSize: "12px" }}>
+                  <div className="mk-step mk-s1 mk-mono" style={{ border: "1px solid #1E1F24", borderRadius: "10px", padding: "10px 12px", fontSize: "12px" }}>
                     {"01 Revenue, both windows"}
                     <br />
-                    <span style={{ color: "#43E5A0" }}>
+                    <span style={{ color: "#3D66FF" }}>
                       {"Snowflake · LIVE"}
                     </span>
                   </div>
                   {" "}
-                  <div className="mk-step mk-s2 mk-mono" style={{ border: "1px solid #1F2729", borderRadius: "10px", padding: "10px 12px", fontSize: "12px" }}>
+                  <div className="mk-step mk-s2 mk-mono" style={{ border: "1px solid #1E1F24", borderRadius: "10px", padding: "10px 12px", fontSize: "12px" }}>
                     {"02 Visits by channel"}
                     <br />
                     <span style={{ color: "#7AA7FF" }}>
@@ -612,7 +612,7 @@ export default function MarketingHome() {
                     </span>
                   </div>
                   {" "}
-                  <div className="mk-step mk-s3 mk-mono" style={{ border: "1px solid #1F2729", borderRadius: "10px", padding: "10px 12px", fontSize: "12px" }}>
+                  <div className="mk-step mk-s3 mk-mono" style={{ border: "1px solid #1E1F24", borderRadius: "10px", padding: "10px 12px", fontSize: "12px" }}>
                     {"03 Spend by campaign"}
                     <br />
                     <span style={{ color: "#7AA7FF" }}>
@@ -620,15 +620,15 @@ export default function MarketingHome() {
                     </span>
                   </div>
                   {" "}
-                  <div className="mk-step mk-s4 mk-mono" style={{ border: "1px solid #1F2729", borderRadius: "10px", padding: "10px 12px", fontSize: "12px" }}>
+                  <div className="mk-step mk-s4 mk-mono" style={{ border: "1px solid #1E1F24", borderRadius: "10px", padding: "10px 12px", fontSize: "12px" }}>
                     {"04 Checkout by device"}
                     <br />
-                    <span style={{ color: "#43E5A0" }}>
+                    <span style={{ color: "#3D66FF" }}>
                       {"Postgres · LIVE"}
                     </span>
                   </div>
                   {" "}
-                  <div className="mk-step mk-s5 mk-mono" style={{ border: "1px solid #1F2729", borderRadius: "10px", padding: "10px 12px", fontSize: "12px" }}>
+                  <div className="mk-step mk-s5 mk-mono" style={{ border: "1px solid #1E1F24", borderRadius: "10px", padding: "10px 12px", fontSize: "12px" }}>
                     {"05 Price, stock, refunds"}
                     <br />
                     <span style={{ color: "#7AA7FF" }}>
@@ -636,23 +636,23 @@ export default function MarketingHome() {
                     </span>
                   </div>
                   {" "}
-                  <div className="mk-step mk-s6 mk-mono" style={{ border: "1px solid #1F2729", borderRadius: "10px", padding: "10px 12px", fontSize: "12px" }}>
+                  <div className="mk-step mk-s6 mk-mono" style={{ border: "1px solid #1E1F24", borderRadius: "10px", padding: "10px 12px", fontSize: "12px" }}>
                     {"06 Split the change"}
                     <br />
-                    <span style={{ color: "#A3B0AC" }}>
+                    <span style={{ color: "#A1A3AD" }}>
                       {"Analysis engine"}
                     </span>
                   </div>
                   {" "}
                 </div>
                 {" "}
-                <div style={{ border: "1px solid #1F2729", borderRadius: "14px", background: "#0E1213", padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
+                <div style={{ border: "1px solid #1E1F24", borderRadius: "14px", background: "#0F0F11", padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
                   {" "}
                   <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap", alignItems: "baseline" }}>
                     <span style={{ fontSize: "19px", fontWeight: "700" }}>
                       {"Revenue is down $58.5k (−12.4%)"}
                     </span>
-                    <span className="mk-mono" style={{ fontSize: "11.5px", color: "#7F8C88" }}>
+                    <span className="mk-mono" style={{ fontSize: "11.5px", color: "#8E909A" }}>
                       {"$470.8k → $412.3k"}
                     </span>
                   </div>
@@ -660,10 +660,10 @@ export default function MarketingHome() {
                   <div style={{ display: "flex", flexDirection: "column", gap: "9px", fontSize: "13px" }}>
                     {" "}
                     <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 150px) minmax(0,1fr) 64px", gap: "10px", alignItems: "center" }}>
-                      <span style={{ color: "#A3B0AC" }}>
+                      <span style={{ color: "#A1A3AD" }}>
                         {"Brand – US budget cut"}
                       </span>
-                      <span style={{ height: "10px", background: "#141A1B", borderRadius: "4px" }}>
+                      <span style={{ height: "10px", background: "#141418", borderRadius: "4px" }}>
                         <span className="mk-grow mk-g1" style={{ display: "block", height: "10px", width: "73%", background: "#FF7A6B", borderRadius: "4px" }}></span>
                       </span>
                       <span className="mk-mono" style={{ textAlign: "right" }}>
@@ -672,10 +672,10 @@ export default function MarketingHome() {
                     </div>
                     {" "}
                     <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 150px) minmax(0,1fr) 64px", gap: "10px", alignItems: "center" }}>
-                      <span style={{ color: "#A3B0AC" }}>
+                      <span style={{ color: "#A1A3AD" }}>
                         {"Mobile checkout, 3.4"}
                       </span>
-                      <span style={{ height: "10px", background: "#141A1B", borderRadius: "4px" }}>
+                      <span style={{ height: "10px", background: "#141418", borderRadius: "4px" }}>
                         <span className="mk-grow mk-g2" style={{ display: "block", height: "10px", width: "37%", background: "#FF7A6B", borderRadius: "4px" }}></span>
                       </span>
                       <span className="mk-mono" style={{ textAlign: "right" }}>
@@ -684,11 +684,11 @@ export default function MarketingHome() {
                     </div>
                     {" "}
                     <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 150px) minmax(0,1fr) 64px", gap: "10px", alignItems: "center" }}>
-                      <span style={{ color: "#A3B0AC" }}>
+                      <span style={{ color: "#A1A3AD" }}>
                         {"Bundles lifted basket"}
                       </span>
-                      <span style={{ height: "10px", background: "#141A1B", borderRadius: "4px" }}>
-                        <span className="mk-grow mk-g3" style={{ display: "block", height: "10px", width: "25%", background: "#43E5A0", borderRadius: "4px" }}></span>
+                      <span style={{ height: "10px", background: "#141418", borderRadius: "4px" }}>
+                        <span className="mk-grow mk-g3" style={{ display: "block", height: "10px", width: "25%", background: "#3D66FF", borderRadius: "4px" }}></span>
                       </span>
                       <span className="mk-mono" style={{ textAlign: "right" }}>
                         {"+$14.9k"}
@@ -696,11 +696,11 @@ export default function MarketingHome() {
                     </div>
                     {" "}
                     <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 150px) minmax(0,1fr) 64px", gap: "10px", alignItems: "center" }}>
-                      <span style={{ color: "#A3B0AC" }}>
+                      <span style={{ color: "#A1A3AD" }}>
                         {"Everything else"}
                       </span>
-                      <span style={{ height: "10px", background: "#141A1B", borderRadius: "4px" }}>
-                        <span className="mk-grow mk-g4" style={{ display: "block", height: "10px", width: "15%", background: "#6F7C78", borderRadius: "4px" }}></span>
+                      <span style={{ height: "10px", background: "#141418", borderRadius: "4px" }}>
+                        <span className="mk-grow mk-g4" style={{ display: "block", height: "10px", width: "15%", background: "#6B6D76", borderRadius: "4px" }}></span>
                       </span>
                       <span className="mk-mono" style={{ textAlign: "right" }}>
                         {"−$8.7k"}
@@ -710,10 +710,10 @@ export default function MarketingHome() {
                   </div>
                   {" "}
                   <div className="mk-mono" style={{ display: "flex", gap: "8px", flexWrap: "wrap", fontSize: "11px" }}>
-                    <span style={{ border: "1px solid #1F2729", color: "#A3B0AC", padding: "4px 8px", borderRadius: "6px" }}>
+                    <span style={{ border: "1px solid #1E1F24", color: "#A1A3AD", padding: "4px 8px", borderRadius: "6px" }}>
                       {"Ruled out: Meta, prices, stock, refunds"}
                     </span>
-                    <span style={{ border: "1px solid #24413A", background: "#132320", color: "#43E5A0", padding: "4px 8px", borderRadius: "6px" }}>
+                    <span style={{ border: "1px solid #2B3566", background: "#121628", color: "#3D66FF", padding: "4px 8px", borderRadius: "6px" }}>
                       {"✓ 14 of 14 figures checked"}
                     </span>
                   </div>
@@ -730,7 +730,7 @@ export default function MarketingHome() {
         {" "}
       </section>
       {" "}
-      <section className="mk-m-sec" id="proof" style={{ padding: "104px 24px", background: "#0B0F10", borderTop: "1px solid #141A1B", borderBottom: "1px solid #141A1B" }}>
+      <section className="mk-m-sec" id="proof" style={{ padding: "104px 24px", background: "#0C0C0E", borderTop: "1px solid #141418", borderBottom: "1px solid #141418" }}>
         {" "}
         <div style={{ maxWidth: "1280px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "44px" }}>
           {" "}
@@ -738,7 +738,7 @@ export default function MarketingHome() {
             {" "}
             <div style={{ display: "flex", flexDirection: "column", gap: "16px", maxWidth: "760px" }}>
               {" "}
-              <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>
+              <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#3D66FF" }}>
                 {"PROOF, NOT PROMISES"}
               </span>
               {" "}
@@ -748,19 +748,19 @@ export default function MarketingHome() {
               {" "}
             </div>
             {" "}
-            <p style={{ margin: "0", maxWidth: "420px", color: "#A3B0AC", fontSize: "16.5px", lineHeight: "1.6" }}>
+            <p style={{ margin: "0", maxWidth: "420px", color: "#A1A3AD", fontSize: "16.5px", lineHeight: "1.6" }}>
               {"AI that invents numbers is worse than no AI. Euliv writes only from computed results — and a checker blocks any figure that doesn’t match its query."}
             </p>
             {" "}
           </div>
           {" "}
-          <div style={{ display: "flex", flexWrap: "wrap", border: "1px solid #2A3436", background: "#07090A", borderRadius: "22px", overflow: "hidden" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", border: "1px solid #2A2B33", background: "#0A0A0B", borderRadius: "22px", overflow: "hidden" }}>
             {" "}
-            <div style={{ flex: "1 1 620px", minWidth: "0", padding: "clamp(24px, 4vw, 52px)", display: "flex", flexDirection: "column", gap: "22px", borderRight: "1px solid #1F2729", position: "relative" }}>
+            <div style={{ flex: "1 1 620px", minWidth: "0", padding: "clamp(24px, 4vw, 52px)", display: "flex", flexDirection: "column", gap: "22px", borderRight: "1px solid #1E1F24", position: "relative" }}>
               {" "}
               <div className="mk-scanline"></div>
               {" "}
-              <div className="mk-mono" style={{ display: "flex", gap: "12px", flexWrap: "wrap", fontSize: "12px", color: "#7F8C88" }}>
+              <div className="mk-mono" style={{ display: "flex", gap: "12px", flexWrap: "wrap", fontSize: "12px", color: "#8E909A" }}>
                 <span>
                   {"ANSWER"}
                 </span>
@@ -794,7 +794,7 @@ export default function MarketingHome() {
                 {"."}
               </p>
               {" "}
-              <p style={{ margin: "0", color: "#A3B0AC", fontSize: "16px", lineHeight: "1.65", maxWidth: "640px" }}>
+              <p style={{ margin: "0", color: "#A1A3AD", fontSize: "16px", lineHeight: "1.65", maxWidth: "640px" }}>
                 {"Ruled out with evidence: Meta campaigns, price changes, stock-outs, refunds and seasonality."}
               </p>
               {" "}
@@ -802,33 +802,33 @@ export default function MarketingHome() {
             {" "}
             <div style={{ flex: "1 1 380px", minWidth: "0", background: "#090C0D", padding: "clamp(20px, 3vw, 34px)", display: "flex", flexDirection: "column", gap: "14px" }}>
               {" "}
-              <span className="mk-mono" style={{ fontSize: "11.5px", letterSpacing: "0.12em", color: "#7F8C88" }}>
+              <span className="mk-mono" style={{ fontSize: "11.5px", letterSpacing: "0.12em", color: "#8E909A" }}>
                 {"EVIDENCE"}
               </span>
               {" "}
-              <div className="mk-note mk-o1" style={{ border: "1px solid #1F2729", background: "#0E1213", borderRadius: "12px", padding: "14px", display: "flex", flexDirection: "column", gap: "8px" }}>
-                <span className="mk-mono" style={{ fontSize: "11.5px", color: "#43E5A0" }}>
+              <div className="mk-note mk-o1" style={{ border: "1px solid #1E1F24", background: "#0F0F11", borderRadius: "12px", padding: "14px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                <span className="mk-mono" style={{ fontSize: "11.5px", color: "#3D66FF" }}>
                   {"[1] Snowflake · orders · LIVE"}
                 </span>
-                <code className="mk-mono" style={{ fontSize: "12px", lineHeight: "1.6", color: "#D5DEDB", whiteSpace: "pre-wrap" }}>
+                <code className="mk-mono" style={{ fontSize: "12px", lineHeight: "1.6", color: "#D4D5DB", whiteSpace: "pre-wrap" }}>
                   {"SELECT SUM(net_amount) FROM orders\nWHERE status = 'paid' AND order_date …"}
                 </code>
               </div>
               {" "}
-              <div className="mk-note mk-o2" style={{ border: "1px solid #1F2729", background: "#0E1213", borderRadius: "12px", padding: "14px", display: "flex", flexDirection: "column", gap: "8px" }}>
+              <div className="mk-note mk-o2" style={{ border: "1px solid #1E1F24", background: "#0F0F11", borderRadius: "12px", padding: "14px", display: "flex", flexDirection: "column", gap: "8px" }}>
                 <span className="mk-mono" style={{ fontSize: "11.5px", color: "#7AA7FF" }}>
                   {"[2] Google Ads · campaigns · SYNCED"}
                 </span>
-                <code className="mk-mono" style={{ fontSize: "12px", lineHeight: "1.6", color: "#D5DEDB", whiteSpace: "pre-wrap" }}>
+                <code className="mk-mono" style={{ fontSize: "12px", lineHeight: "1.6", color: "#D4D5DB", whiteSpace: "pre-wrap" }}>
                   {"Brand – US daily budget\n29 Sep  $1,200   →   30 Sep  $500"}
                 </code>
               </div>
               {" "}
-              <div className="mk-note mk-o3" style={{ border: "1px solid #1F2729", background: "#0E1213", borderRadius: "12px", padding: "14px", display: "flex", flexDirection: "column", gap: "8px" }}>
-                <span className="mk-mono" style={{ fontSize: "11.5px", color: "#43E5A0" }}>
+              <div className="mk-note mk-o3" style={{ border: "1px solid #1E1F24", background: "#0F0F11", borderRadius: "12px", padding: "14px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                <span className="mk-mono" style={{ fontSize: "11.5px", color: "#3D66FF" }}>
                   {"[3] Postgres · checkout_events · LIVE"}
                 </span>
-                <code className="mk-mono" style={{ fontSize: "12px", lineHeight: "1.6", color: "#D5DEDB", whiteSpace: "pre-wrap" }}>
+                <code className="mk-mono" style={{ fontSize: "12px", lineHeight: "1.6", color: "#D4D5DB", whiteSpace: "pre-wrap" }}>
                   {"mobile conversion 3.1% → 2.4%\nafter release 3.4"}
                 </code>
               </div>
@@ -847,7 +847,7 @@ export default function MarketingHome() {
           {" "}
           <div style={{ display: "flex", flexDirection: "column", gap: "16px", maxWidth: "820px" }}>
             {" "}
-            <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>
+            <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#3D66FF" }}>
               {"THE PLATFORM"}
             </span>
             {" "}
@@ -855,7 +855,7 @@ export default function MarketingHome() {
               {"One workspace. The work of a whole data team."}
             </h2>
             {" "}
-            <p style={{ margin: "0", color: "#A3B0AC", fontSize: "17px", lineHeight: "1.6" }}>
+            <p style={{ margin: "0", color: "#A1A3AD", fontSize: "17px", lineHeight: "1.6" }}>
               {"The engineer who connects and governs the data. The scientist who builds the models. The analyst who explains what happened. All in one calm screen anyone can use."}
             </p>
             {" "}
@@ -863,9 +863,9 @@ export default function MarketingHome() {
           {" "}
           <div className="mk-m-rail" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: "16px" }}>
             {" "}
-            <div className="mk-lift" style={{ border: "1px solid #1F2729", background: "#0B0F10", borderRadius: "24px", padding: "28px", display: "flex", flexDirection: "column", gap: "14px" }}>
+            <div className="mk-lift" style={{ border: "1px solid #1E1F24", background: "#0C0C0E", borderRadius: "24px", padding: "28px", display: "flex", flexDirection: "column", gap: "14px" }}>
               {" "}
-              <span className="mk-mono" style={{ fontSize: "12px", color: "#43E5A0" }}>
+              <span className="mk-mono" style={{ fontSize: "12px", color: "#3D66FF" }}>
                 {"FORECAST"}
               </span>
               {" "}
@@ -874,24 +874,24 @@ export default function MarketingHome() {
               </h3>
               {" "}
               <svg viewBox="0 0 320 120" role="img" aria-label="A forecast continuing past today with a widening range" style={{ width: "100%", height: "auto" }}>
-                <path d="M0 92 L40 84 L80 88 L120 70 L160 66 L200 52" fill="none" stroke="#A3B0AC" strokeWidth="2"></path>
-                <path d="M200 52 L240 44 L280 36 L320 26 L320 50 L280 54 L240 58 L200 52 Z" fill="rgba(67,229,160,.14)"></path>
-                <path className="mk-draw" d="M200 52 L240 46 L280 41 L320 38" fill="none" stroke="#43E5A0" strokeWidth="2.5"></path>
-                <line x1="200" y1="10" x2="200" y2="112" stroke="#2A3436" strokeWidth="1"></line>
-                <text x="204" y="20" fill="#7F8C88" fontSize="11" fontFamily="Geist Mono, monospace">
+                <path d="M0 92 L40 84 L80 88 L120 70 L160 66 L200 52" fill="none" stroke="#A1A3AD" strokeWidth="2"></path>
+                <path d="M200 52 L240 44 L280 36 L320 26 L320 50 L280 54 L240 58 L200 52 Z" fill="rgba(61,102,255,.14)"></path>
+                <path className="mk-draw" d="M200 52 L240 46 L280 41 L320 38" fill="none" stroke="#3D66FF" strokeWidth="2.5"></path>
+                <line x1="200" y1="10" x2="200" y2="112" stroke="#2A2B33" strokeWidth="1"></line>
+                <text x="204" y="20" fill="#8E909A" fontSize="11" fontFamily="Geist Mono, monospace">
                   {"today"}
                 </text>
               </svg>
               {" "}
-              <p style={{ margin: "0", color: "#A3B0AC", lineHeight: "1.6", fontSize: "15px" }}>
+              <p style={{ margin: "0", color: "#A1A3AD", lineHeight: "1.6", fontSize: "15px" }}>
                 {"One series or thousands, always with the range of likely outcomes — and tested on weeks the model never saw."}
               </p>
               {" "}
             </div>
             {" "}
-            <div className="mk-lift" style={{ border: "1px solid #1F2729", background: "#0B0F10", borderRadius: "24px", padding: "28px", display: "flex", flexDirection: "column", gap: "14px" }}>
+            <div className="mk-lift" style={{ border: "1px solid #1E1F24", background: "#0C0C0E", borderRadius: "24px", padding: "28px", display: "flex", flexDirection: "column", gap: "14px" }}>
               {" "}
-              <span className="mk-mono" style={{ fontSize: "12px", color: "#43E5A0" }}>
+              <span className="mk-mono" style={{ fontSize: "12px", color: "#3D66FF" }}>
                 {"SPACES"}
               </span>
               {" "}
@@ -901,47 +901,47 @@ export default function MarketingHome() {
               {" "}
               <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                 {" "}
-                <div style={{ display: "flex", alignItems: "center", gap: "10px", border: "1px solid #1F2729", borderRadius: "12px", padding: "11px 12px" }}>
-                  <span style={{ width: "10px", height: "10px", borderRadius: "3px", background: "#43E5A0" }}></span>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", border: "1px solid #1E1F24", borderRadius: "12px", padding: "11px 12px" }}>
+                  <span style={{ width: "10px", height: "10px", borderRadius: "3px", background: "#3D66FF" }}></span>
                   <span style={{ fontWeight: "600" }}>
                     {"Marketing & Brand"}
                   </span>
-                  <span className="mk-mono" style={{ marginLeft: "auto", fontSize: "11px", color: "#7F8C88" }}>
+                  <span className="mk-mono" style={{ marginLeft: "auto", fontSize: "11px", color: "#8E909A" }}>
                     {"8 sources"}
                   </span>
                 </div>
                 {" "}
-                <div style={{ display: "flex", alignItems: "center", gap: "10px", border: "1px solid #1F2729", borderRadius: "12px", padding: "11px 12px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", border: "1px solid #1E1F24", borderRadius: "12px", padding: "11px 12px" }}>
                   <span style={{ width: "10px", height: "10px", borderRadius: "3px", background: "#7AA7FF" }}></span>
                   <span style={{ fontWeight: "600" }}>
                     {"Sales"}
                   </span>
-                  <span className="mk-mono" style={{ marginLeft: "auto", fontSize: "11px", color: "#7F8C88" }}>
+                  <span className="mk-mono" style={{ marginLeft: "auto", fontSize: "11px", color: "#8E909A" }}>
                     {"4 sources"}
                   </span>
                 </div>
                 {" "}
-                <div style={{ display: "flex", alignItems: "center", gap: "10px", border: "1px solid #1F2729", borderRadius: "12px", padding: "11px 12px" }}>
-                  <span style={{ width: "10px", height: "10px", borderRadius: "3px", background: "#A3B0AC" }}></span>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", border: "1px solid #1E1F24", borderRadius: "12px", padding: "11px 12px" }}>
+                  <span style={{ width: "10px", height: "10px", borderRadius: "3px", background: "#A1A3AD" }}></span>
                   <span style={{ fontWeight: "600" }}>
                     {"Finance"}
                   </span>
-                  <span className="mk-mono" style={{ marginLeft: "auto", fontSize: "11px", color: "#7F8C88" }}>
+                  <span className="mk-mono" style={{ marginLeft: "auto", fontSize: "11px", color: "#8E909A" }}>
                     {"private"}
                   </span>
                 </div>
                 {" "}
               </div>
               {" "}
-              <p style={{ margin: "0", color: "#A3B0AC", lineHeight: "1.6", fontSize: "15px" }}>
+              <p style={{ margin: "0", color: "#A1A3AD", lineHeight: "1.6", fontSize: "15px" }}>
                 {"Group sources by team and ask a Space. Access always follows the data — a Space never shows what someone couldn’t already see."}
               </p>
               {" "}
             </div>
             {" "}
-            <div className="mk-lift" style={{ border: "1px solid #1F2729", background: "#0B0F10", borderRadius: "24px", padding: "28px", display: "flex", flexDirection: "column", gap: "14px" }}>
+            <div className="mk-lift" style={{ border: "1px solid #1E1F24", background: "#0C0C0E", borderRadius: "24px", padding: "28px", display: "flex", flexDirection: "column", gap: "14px" }}>
               {" "}
-              <span className="mk-mono" style={{ fontSize: "12px", color: "#43E5A0" }}>
+              <span className="mk-mono" style={{ fontSize: "12px", color: "#3D66FF" }}>
                 {"DASHBOARDS"}
               </span>
               {" "}
@@ -949,7 +949,7 @@ export default function MarketingHome() {
                 {"From answer to board in one click."}
               </h3>
               {" "}
-              <div style={{ height: "112px", display: "flex", alignItems: "flex-end", gap: "8px", borderBottom: "1px solid #1F2729" }}>
+              <div style={{ height: "112px", display: "flex", alignItems: "flex-end", gap: "8px", borderBottom: "1px solid #1E1F24" }}>
                 {" "}
                 {(V.bars || []).map((b: any, i1: number) => (
                   <Fragment key={i1}>
@@ -959,17 +959,17 @@ export default function MarketingHome() {
                 {" "}
               </div>
               {" "}
-              <p style={{ margin: "0", color: "#A3B0AC", lineHeight: "1.6", fontSize: "15px" }}>
+              <p style={{ margin: "0", color: "#A1A3AD", lineHeight: "1.6", fontSize: "15px" }}>
                 {"Live tiles, cross-filters and freshness for every source — shared by link or on your own domain."}
               </p>
               {" "}
             </div>
             {" "}
-            <div style={{ gridColumn: "1 / -1", minWidth: "0", border: "1px solid #1F2729", background: "linear-gradient(160deg, #102019, #0B0F10 60%)", borderRadius: "24px", padding: "clamp(24px, 3.4vw, 36px)", display: "flex", flexWrap: "wrap", gap: "32px", alignItems: "center" }}>
+            <div style={{ gridColumn: "1 / -1", minWidth: "0", border: "1px solid #1E1F24", background: "linear-gradient(160deg, #10162e, #0C0C0E 60%)", borderRadius: "24px", padding: "clamp(24px, 3.4vw, 36px)", display: "flex", flexWrap: "wrap", gap: "32px", alignItems: "center" }}>
               {" "}
               <div style={{ flex: "1 1 340px", display: "flex", flexDirection: "column", gap: "12px" }}>
                 {" "}
-                <span className="mk-mono" style={{ fontSize: "12px", color: "#43E5A0" }}>
+                <span className="mk-mono" style={{ fontSize: "12px", color: "#3D66FF" }}>
                   {"ML STUDIO · 21 KINDS OF MODEL"}
                 </span>
                 {" "}
@@ -977,7 +977,7 @@ export default function MarketingHome() {
                   {"Predictions from a sentence."}
                 </h3>
                 {" "}
-                <p style={{ margin: "0", color: "#A3B0AC", lineHeight: "1.65", fontSize: "16px" }}>
+                <p style={{ margin: "0", color: "#A1A3AD", lineHeight: "1.65", fontSize: "16px" }}>
                   {"Say “which customers will stop buying?” Euliv builds the label from order history, the features at the right point in time and a fair test; checks for leaks; trains several models against a baseline — and explains every score. Learn from one source, several joined on a shared key, or a whole Space. Never a silent sample."}
                 </p>
                 {" "}
@@ -985,7 +985,7 @@ export default function MarketingHome() {
               {" "}
               <div style={{ flex: "1 1 420px", minWidth: "0", display: "flex", flexDirection: "column", gap: "10px" }}>
                 {" "}
-                <span className="mk-mono" style={{ fontSize: "11.5px", color: "#7F8C88" }}>
+                <span className="mk-mono" style={{ fontSize: "11.5px", color: "#8E909A" }}>
                   {"Illustrative leaderboard · tested on the most recent 20%"}
                 </span>
                 {" "}
@@ -993,8 +993,8 @@ export default function MarketingHome() {
                   <span>
                     {"Gradient boosting"}
                   </span>
-                  <span style={{ height: "10px", background: "#141A1B", borderRadius: "4px" }}>
-                    <span className="mk-grow mk-g1" style={{ display: "block", height: "10px", width: "88%", background: "#43E5A0", borderRadius: "4px" }}></span>
+                  <span style={{ height: "10px", background: "#141418", borderRadius: "4px" }}>
+                    <span className="mk-grow mk-g1" style={{ display: "block", height: "10px", width: "88%", background: "#3D66FF", borderRadius: "4px" }}></span>
                   </span>
                   <span className="mk-mono">
                     {"0.88"}
@@ -1005,8 +1005,8 @@ export default function MarketingHome() {
                   <span>
                     {"Random forest"}
                   </span>
-                  <span style={{ height: "10px", background: "#141A1B", borderRadius: "4px" }}>
-                    <span className="mk-grow mk-g2" style={{ display: "block", height: "10px", width: "84%", background: "#2C9C6F", borderRadius: "4px" }}></span>
+                  <span style={{ height: "10px", background: "#141418", borderRadius: "4px" }}>
+                    <span className="mk-grow mk-g2" style={{ display: "block", height: "10px", width: "84%", background: "#2D5BFF", borderRadius: "4px" }}></span>
                   </span>
                   <span className="mk-mono">
                     {"0.84"}
@@ -1017,8 +1017,8 @@ export default function MarketingHome() {
                   <span>
                     {"Linear model"}
                   </span>
-                  <span style={{ height: "10px", background: "#141A1B", borderRadius: "4px" }}>
-                    <span className="mk-grow mk-g3" style={{ display: "block", height: "10px", width: "78%", background: "#2C9C6F", borderRadius: "4px" }}></span>
+                  <span style={{ height: "10px", background: "#141418", borderRadius: "4px" }}>
+                    <span className="mk-grow mk-g3" style={{ display: "block", height: "10px", width: "78%", background: "#2D5BFF", borderRadius: "4px" }}></span>
                   </span>
                   <span className="mk-mono">
                     {"0.78"}
@@ -1026,13 +1026,13 @@ export default function MarketingHome() {
                 </div>
                 {" "}
                 <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 150px) minmax(0,1fr) 48px", gap: "12px", alignItems: "center", fontSize: "14px" }}>
-                  <span style={{ color: "#7F8C88" }}>
+                  <span style={{ color: "#8E909A" }}>
                     {"Baseline to beat"}
                   </span>
-                  <span style={{ height: "10px", background: "#141A1B", borderRadius: "4px" }}>
-                    <span className="mk-grow mk-g4" style={{ display: "block", height: "10px", width: "61%", background: "#2A3436", borderRadius: "4px" }}></span>
+                  <span style={{ height: "10px", background: "#141418", borderRadius: "4px" }}>
+                    <span className="mk-grow mk-g4" style={{ display: "block", height: "10px", width: "61%", background: "#2A2B33", borderRadius: "4px" }}></span>
                   </span>
-                  <span className="mk-mono" style={{ color: "#7F8C88" }}>
+                  <span className="mk-mono" style={{ color: "#8E909A" }}>
                     {"0.61"}
                   </span>
                 </div>
@@ -1041,7 +1041,7 @@ export default function MarketingHome() {
                   {" "}
                   {(V.kinds || []).map((k: any, i1: number) => (
                     <Fragment key={i1}>
-                      <span style={{ border: "1px solid #1F2729", background: "#0E1213", borderRadius: "999px", padding: "6px 11px", fontSize: "13px", color: "#D5DEDB" }}>
+                      <span style={{ border: "1px solid #1E1F24", background: "#0F0F11", borderRadius: "999px", padding: "6px 11px", fontSize: "13px", color: "#D4D5DB" }}>
                         {k}
                       </span>
                     </Fragment>
@@ -1053,9 +1053,9 @@ export default function MarketingHome() {
               {" "}
             </div>
             {" "}
-            <div style={{ gridColumn: "1 / -1", minWidth: "0", border: "1px solid #1F2729", background: "#0B0F10", borderRadius: "24px", padding: "clamp(24px, 3.4vw, 36px)", display: "flex", flexDirection: "column", gap: "18px" }}>
+            <div style={{ gridColumn: "1 / -1", minWidth: "0", border: "1px solid #1E1F24", background: "#0C0C0E", borderRadius: "24px", padding: "clamp(24px, 3.4vw, 36px)", display: "flex", flexDirection: "column", gap: "18px" }}>
               {" "}
-              <span className="mk-mono" style={{ fontSize: "12px", color: "#43E5A0" }}>
+              <span className="mk-mono" style={{ fontSize: "12px", color: "#3D66FF" }}>
                 {"AUTOMATIONS"}
               </span>
               {" "}
@@ -1064,7 +1064,7 @@ export default function MarketingHome() {
                   {"When"}
                 </span>
                 {" weekly revenue drops more than 10%, "}
-                <span style={{ color: "#43E5A0" }}>
+                <span style={{ color: "#3D66FF" }}>
                   {"run"}
                 </span>
                 {" a full analysis — then "}
@@ -1074,11 +1074,11 @@ export default function MarketingHome() {
                 {" the leadership channel, only if something changed."}
               </p>
               {" "}
-              <div style={{ position: "relative", height: "44px", borderRadius: "999px", border: "1px solid #1F2729", overflow: "hidden" }}>
+              <div style={{ position: "relative", height: "44px", borderRadius: "999px", border: "1px solid #1E1F24", overflow: "hidden" }}>
                 {" "}
                 <div className="mk-beam"></div>
                 {" "}
-                <div className="mk-mono" style={{ position: "relative", display: "flex", justifyContent: "space-between", gap: "10px", height: "100%", alignItems: "center", padding: "0 18px", fontSize: "clamp(10px, 1vw, 12px)", color: "#A3B0AC" }}>
+                <div className="mk-mono" style={{ position: "relative", display: "flex", justifyContent: "space-between", gap: "10px", height: "100%", alignItems: "center", padding: "0 18px", fontSize: "clamp(10px, 1vw, 12px)", color: "#A1A3AD" }}>
                   <span>
                     {"WHEN · schedule, new data, threshold"}
                   </span>
@@ -1100,7 +1100,7 @@ export default function MarketingHome() {
         {" "}
       </section>
       {" "}
-      <section className="mk-m-sec" id="pulse" style={{ padding: "104px 24px", background: "#0B0F10", borderTop: "1px solid #141A1B", borderBottom: "1px solid #141A1B" }}>
+      <section className="mk-m-sec" id="pulse" style={{ padding: "104px 24px", background: "#0C0C0E", borderTop: "1px solid #141418", borderBottom: "1px solid #141418" }}>
         {" "}
         <div style={{ maxWidth: "1280px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "40px" }}>
           {" "}
@@ -1108,7 +1108,7 @@ export default function MarketingHome() {
             {" "}
             <div style={{ display: "flex", flexDirection: "column", gap: "16px", maxWidth: "760px" }}>
               {" "}
-              <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>
+              <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#3D66FF" }}>
                 {"ALWAYS WATCHING"}
               </span>
               {" "}
@@ -1118,18 +1118,18 @@ export default function MarketingHome() {
               {" "}
             </div>
             {" "}
-            <p style={{ margin: "0", maxWidth: "420px", color: "#A3B0AC", fontSize: "16.5px", lineHeight: "1.6" }}>
+            <p style={{ margin: "0", maxWidth: "420px", color: "#A1A3AD", fontSize: "16.5px", lineHeight: "1.6" }}>
               {"From “something’s off” to “fixed” before lunch — the alert, the cause and the proof arrive together."}
             </p>
             {" "}
           </div>
           {" "}
-          <div style={{ border: "1px solid #1F2729", background: "#07090A", borderRadius: "24px", padding: "clamp(16px, 2.4vw, 28px)", display: "flex", flexDirection: "column", gap: "14px" }}>
+          <div style={{ border: "1px solid #1E1F24", background: "#0A0A0B", borderRadius: "24px", padding: "clamp(16px, 2.4vw, 28px)", display: "flex", flexDirection: "column", gap: "14px" }}>
             {" "}
             <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap", alignItems: "baseline" }}>
               {" "}
               <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                <span style={{ fontSize: "14px", color: "#A3B0AC" }}>
+                <span style={{ fontSize: "14px", color: "#A1A3AD" }}>
                   {"Daily revenue"}
                 </span>
                 <span style={{ fontWeight: "800", fontSize: "clamp(26px, 3vw, 38px)", letterSpacing: "-0.04em" }}>
@@ -1140,7 +1140,7 @@ export default function MarketingHome() {
                 </span>
               </div>
               {" "}
-              <span className="mk-mono" style={{ fontSize: "11.5px", color: "#7F8C88" }}>
+              <span className="mk-mono" style={{ fontSize: "11.5px", color: "#8E909A" }}>
                 {"Sample data · Snowflake + Google Ads + Postgres"}
               </span>
               {" "}
@@ -1151,27 +1151,27 @@ export default function MarketingHome() {
               <svg viewBox="0 0 1200 380" role="img" aria-label="Daily revenue rises, drops sharply on 30 September, then recovers after the budget is restored" style={{ position: "absolute", inset: "0", width: "100%", height: "100%" }}>
                 <defs>
                   <linearGradient id="homeFill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0" stopColor="#43E5A0" stopOpacity=".28"></stop>
-                    <stop offset="1" stopColor="#43E5A0" stopOpacity="0"></stop>
+                    <stop offset="0" stopColor="#3D66FF" stopOpacity=".28"></stop>
+                    <stop offset="1" stopColor="#3D66FF" stopOpacity="0"></stop>
                   </linearGradient>
                 </defs>
-                <line x1="0" y1="95" x2="1200" y2="95" stroke="#141A1B"></line>
-                <line x1="0" y1="190" x2="1200" y2="190" stroke="#141A1B"></line>
-                <line x1="0" y1="285" x2="1200" y2="285" stroke="#141A1B"></line>
+                <line x1="0" y1="95" x2="1200" y2="95" stroke="#141418"></line>
+                <line x1="0" y1="190" x2="1200" y2="190" stroke="#141418"></line>
+                <line x1="0" y1="285" x2="1200" y2="285" stroke="#141418"></line>
                 <rect className="mk-zone" x="770" y="20" width="230" height="330" fill="rgba(255,122,107,.07)"></rect>
                 <path className="mk-area" d="M0 250 L60 240 L120 245 L180 225 L240 230 L300 210 L360 215 L420 195 L480 200 L540 185 L600 190 L660 175 L720 180 L770 176 L800 252 L850 264 L900 258 L950 266 L1000 256 L1040 226 L1100 206 L1160 196 L1200 190 L1200 350 L0 350 Z" fill="url(#homeFill)"></path>
-                <path className="mk-line" d="M0 250 L60 240 L120 245 L180 225 L240 230 L300 210 L360 215 L420 195 L480 200 L540 185 L600 190 L660 175 L720 180 L770 176 L800 252 L850 264 L900 258 L950 266 L1000 256 L1040 226 L1100 206 L1160 196 L1200 190" fill="none" stroke="#43E5A0" strokeWidth="3" strokeLinejoin="round"></path>
+                <path className="mk-line" d="M0 250 L60 240 L120 245 L180 225 L240 230 L300 210 L360 215 L420 195 L480 200 L540 185 L600 190 L660 175 L720 180 L770 176 L800 252 L850 264 L900 258 L950 266 L1000 256 L1040 226 L1100 206 L1160 196 L1200 190" fill="none" stroke="#3D66FF" strokeWidth="3" strokeLinejoin="round"></path>
                 <circle cx="800" cy="252" r="7" fill="#FF7A6B"></circle>
                 <circle className="mk-pin" cx="800" cy="252" r="7" fill="none" stroke="#FF7A6B" strokeWidth="2"></circle>
-                <circle cx="1040" cy="226" r="7" fill="#43E5A0"></circle>
-                <circle className="mk-pin" cx="1040" cy="226" r="7" fill="none" stroke="#43E5A0" strokeWidth="2"></circle>
-                <text x="0" y="372" fill="#6F7C78" fontSize="13" fontFamily="Geist Mono, monospace">
+                <circle cx="1040" cy="226" r="7" fill="#3D66FF"></circle>
+                <circle className="mk-pin" cx="1040" cy="226" r="7" fill="none" stroke="#3D66FF" strokeWidth="2"></circle>
+                <text x="0" y="372" fill="#6B6D76" fontSize="13" fontFamily="Geist Mono, monospace">
                   {"1 Sep"}
                 </text>
-                <text x="560" y="372" fill="#6F7C78" fontSize="13" fontFamily="Geist Mono, monospace">
+                <text x="560" y="372" fill="#6B6D76" fontSize="13" fontFamily="Geist Mono, monospace">
                   {"15 Sep"}
                 </text>
-                <text x="1130" y="372" fill="#6F7C78" fontSize="13" fontFamily="Geist Mono, monospace">
+                <text x="1130" y="372" fill="#6B6D76" fontSize="13" fontFamily="Geist Mono, monospace">
                   {"14 Oct"}
                 </text>
               </svg>
@@ -1188,8 +1188,8 @@ export default function MarketingHome() {
                 </span>
               </div>
               {" "}
-              <div className="mk-call mk-cl2 mk-d-only" style={{ position: "absolute", right: "2%", top: "14%", maxWidth: "40%", border: "1px solid #24413A", background: "rgba(19,35,32,.95)", borderRadius: "12px", padding: "10px 12px", display: "flex", flexDirection: "column", gap: "4px" }}>
-                <span className="mk-mono" style={{ fontSize: "11px", color: "#43E5A0" }}>
+              <div className="mk-call mk-cl2 mk-d-only" style={{ position: "absolute", right: "2%", top: "14%", maxWidth: "40%", border: "1px solid #2B3566", background: "rgba(14,22,51,.95)", borderRadius: "12px", padding: "10px 12px", display: "flex", flexDirection: "column", gap: "4px" }}>
+                <span className="mk-mono" style={{ fontSize: "11px", color: "#3D66FF" }}>
                   {"7 OCT · BUDGET RESTORED"}
                 </span>
                 <span style={{ fontSize: "clamp(11px, 1.2vw, 14px)", lineHeight: "1.4" }}>
@@ -1206,9 +1206,9 @@ export default function MarketingHome() {
             {(V.story || []).map((s: any, i1: number) => (
               <Fragment key={i1}>
                 {" "}
-                <div className={`mk-tl ${s.cls ? "mk-" + s.cls : ""}`} style={{ border: "1px solid #1F2729", background: "#0B0F10", borderRadius: "18px", padding: "22px", display: "flex", flexDirection: "column", gap: "10px" }}>
+                <div className={`mk-tl ${s.cls ? "mk-" + s.cls : ""}`} style={{ border: "1px solid #1E1F24", background: "#0C0C0E", borderRadius: "18px", padding: "22px", display: "flex", flexDirection: "column", gap: "10px" }}>
                   {" "}
-                  <span className="mk-mono" style={{ fontSize: "13px", color: "#43E5A0" }}>
+                  <span className="mk-mono" style={{ fontSize: "13px", color: "#3D66FF" }}>
                     {s.time}
                   </span>
                   {" "}
@@ -1216,7 +1216,7 @@ export default function MarketingHome() {
                     {s.t}
                   </span>
                   {" "}
-                  <span style={{ color: "#A3B0AC", fontSize: "14.5px", lineHeight: "1.6" }}>
+                  <span style={{ color: "#A1A3AD", fontSize: "14.5px", lineHeight: "1.6" }}>
                     {s.d}
                   </span>
                   {" "}
@@ -1237,7 +1237,7 @@ export default function MarketingHome() {
           {" "}
           <div style={{ display: "flex", flexDirection: "column", gap: "16px", maxWidth: "820px" }}>
             {" "}
-            <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>
+            <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#3D66FF" }}>
               {"SOLUTIONS"}
             </span>
             {" "}
@@ -1252,21 +1252,21 @@ export default function MarketingHome() {
             {(V.teams || []).map((t: any, i1: number) => (
               <Fragment key={i1}>
                 {" "}
-                <div className="mk-lift" style={{ border: "1px solid #1F2729", background: "#0B0F10", borderRadius: "22px", padding: "26px", display: "flex", flexDirection: "column", gap: "12px" }}>
+                <div className="mk-lift" style={{ border: "1px solid #1E1F24", background: "#0C0C0E", borderRadius: "22px", padding: "26px", display: "flex", flexDirection: "column", gap: "12px" }}>
                   {" "}
-                  <span style={{ fontWeight: "700", fontSize: "18px", color: "#43E5A0" }}>
+                  <span style={{ fontWeight: "700", fontSize: "18px", color: "#3D66FF" }}>
                     {t.n}
                   </span>
                   {" "}
-                  <p style={{ margin: "0", fontSize: "18px", lineHeight: "1.45", color: "#E8EEEC", fontWeight: "500" }}>
+                  <p style={{ margin: "0", fontSize: "18px", lineHeight: "1.45", color: "#EDEDEF", fontWeight: "500" }}>
                     {"“"}{t.q}{"”"}
                   </p>
                   {" "}
-                  <p style={{ margin: "0", fontSize: "14.5px", lineHeight: "1.6", color: "#A3B0AC" }}>
+                  <p style={{ margin: "0", fontSize: "14.5px", lineHeight: "1.6", color: "#A1A3AD" }}>
                     {t.d}
                   </p>
                   {" "}
-                  <span className="mk-mono" style={{ fontSize: "11.5px", color: "#7F8C88", borderTop: "1px solid #1F2729", paddingTop: "12px", marginTop: "auto" }}>
+                  <span className="mk-mono" style={{ fontSize: "11.5px", color: "#8E909A", borderTop: "1px solid #1E1F24", paddingTop: "12px", marginTop: "auto" }}>
                     {t.s}
                   </span>
                   {" "}
@@ -1281,13 +1281,13 @@ export default function MarketingHome() {
         {" "}
       </section>
       {" "}
-      <section className="mk-m-sec" id="security" style={{ padding: "104px 24px", background: "#0B0F10", borderTop: "1px solid #141A1B", borderBottom: "1px solid #141A1B" }}>
+      <section className="mk-m-sec" id="security" style={{ padding: "104px 24px", background: "#0C0C0E", borderTop: "1px solid #141418", borderBottom: "1px solid #141418" }}>
         {" "}
         <div style={{ maxWidth: "1280px", margin: "0 auto", display: "flex", flexWrap: "wrap", gap: "56px" }}>
           {" "}
           <div style={{ flex: "1 1 360px", display: "flex", flexDirection: "column", gap: "18px" }}>
             {" "}
-            <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>
+            <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#3D66FF" }}>
               {"ENTERPRISE-GRADE"}
             </span>
             {" "}
@@ -1295,19 +1295,19 @@ export default function MarketingHome() {
               {"Secure by design, not by add-on."}
             </h2>
             {" "}
-            <p style={{ margin: "0", color: "#A3B0AC", fontSize: "16.5px", lineHeight: "1.65" }}>
+            <p style={{ margin: "0", color: "#A1A3AD", fontSize: "16.5px", lineHeight: "1.65" }}>
               {"Euliv never writes to your systems and never moves raw rows. Every question keeps its plan, SQL, results and answer together — so any number can be traced months later, by you, your auditor or your board."}
             </p>
             {" "}
           </div>
           {" "}
-          <dl style={{ flex: "1 1 620px", margin: "0", borderTop: "1px solid #2A3436" }}>
+          <dl style={{ flex: "1 1 620px", margin: "0", borderTop: "1px solid #2A2B33" }}>
             {" "}
             {(V.spec || []).map((s: any, i1: number) => (
               <Fragment key={i1}>
                 {" "}
-                <div className="mk-m-spec" style={{ display: "grid", gridTemplateColumns: "minmax(130px, 210px) minmax(0, 1fr)", gap: "20px", padding: "18px 0", borderBottom: "1px solid #1F2729" }}>
-                  <dt className="mk-mono" style={{ fontSize: "12.5px", color: "#43E5A0" }}>
+                <div className="mk-m-spec" style={{ display: "grid", gridTemplateColumns: "minmax(130px, 210px) minmax(0, 1fr)", gap: "20px", padding: "18px 0", borderBottom: "1px solid #1E1F24" }}>
+                  <dt className="mk-mono" style={{ fontSize: "12.5px", color: "#3D66FF" }}>
                     {s.k}
                   </dt>
                   <dd style={{ margin: "0", fontSize: "16px", lineHeight: "1.55" }}>
@@ -1326,40 +1326,40 @@ export default function MarketingHome() {
       {" "}
       <section style={{ padding: "104px 24px 0" }}>
         {" "}
-        <div className="mk-m-num" style={{ maxWidth: "1280px", margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "1px", background: "#1F2729", border: "1px solid #1F2729", borderRadius: "26px", overflow: "hidden" }}>
+        <div className="mk-m-num" style={{ maxWidth: "1280px", margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "1px", background: "#1E1F24", border: "1px solid #1E1F24", borderRadius: "26px", overflow: "hidden" }}>
           {" "}
-          <div className="mk-m-numcell" style={{ background: "#07090A", padding: "34px", display: "flex", flexDirection: "column", gap: "8px" }}>
-            <span className="mk-m-numbig" style={{ fontWeight: "900", fontSize: "64px", color: "#43E5A0", letterSpacing: "-0.05em" }}>
+          <div className="mk-m-numcell" style={{ background: "#0A0A0B", padding: "34px", display: "flex", flexDirection: "column", gap: "8px" }}>
+            <span className="mk-m-numbig" style={{ fontWeight: "900", fontSize: "64px", color: "#3D66FF", letterSpacing: "-0.05em" }}>
               {"71"}
             </span>
-            <span style={{ color: "#A3B0AC", fontSize: "15.5px", lineHeight: "1.5" }}>
+            <span style={{ color: "#A1A3AD", fontSize: "15.5px", lineHeight: "1.5" }}>
               {"sources in the catalog, from warehouses to social pages"}
             </span>
           </div>
           {" "}
-          <div className="mk-m-numcell" style={{ background: "#07090A", padding: "34px", display: "flex", flexDirection: "column", gap: "8px" }}>
+          <div className="mk-m-numcell" style={{ background: "#0A0A0B", padding: "34px", display: "flex", flexDirection: "column", gap: "8px" }}>
             <span className="mk-m-numbig" style={{ fontWeight: "900", fontSize: "64px", letterSpacing: "-0.05em" }}>
               {"21"}
             </span>
-            <span style={{ color: "#A3B0AC", fontSize: "15.5px", lineHeight: "1.5" }}>
+            <span style={{ color: "#A1A3AD", fontSize: "15.5px", lineHeight: "1.5" }}>
               {"kinds of model, from churn to price sensitivity"}
             </span>
           </div>
           {" "}
-          <div className="mk-m-numcell" style={{ background: "#07090A", padding: "34px", display: "flex", flexDirection: "column", gap: "8px" }}>
+          <div className="mk-m-numcell" style={{ background: "#0A0A0B", padding: "34px", display: "flex", flexDirection: "column", gap: "8px" }}>
             <span className="mk-m-numbig" style={{ fontWeight: "900", fontSize: "64px", letterSpacing: "-0.05em" }}>
               {"5"}
             </span>
-            <span style={{ color: "#A3B0AC", fontSize: "15.5px", lineHeight: "1.5" }}>
+            <span style={{ color: "#A1A3AD", fontSize: "15.5px", lineHeight: "1.5" }}>
               {"checked layers between your question and its proof"}
             </span>
           </div>
           {" "}
-          <div className="mk-m-numcell" style={{ background: "#07090A", padding: "34px", display: "flex", flexDirection: "column", gap: "8px" }}>
-            <span className="mk-m-numbig" style={{ fontWeight: "900", fontSize: "64px", color: "#43E5A0", letterSpacing: "-0.05em" }}>
+          <div className="mk-m-numcell" style={{ background: "#0A0A0B", padding: "34px", display: "flex", flexDirection: "column", gap: "8px" }}>
+            <span className="mk-m-numbig" style={{ fontWeight: "900", fontSize: "64px", color: "#3D66FF", letterSpacing: "-0.05em" }}>
               {"0"}
             </span>
-            <span style={{ color: "#A3B0AC", fontSize: "15.5px", lineHeight: "1.5" }}>
+            <span style={{ color: "#A1A3AD", fontSize: "15.5px", lineHeight: "1.5" }}>
               {"raw rows moved — only small aggregates leave your systems"}
             </span>
           </div>
@@ -1395,11 +1395,11 @@ export default function MarketingHome() {
         </div>
       </section>
       {" "}
-      <section style={{ position: "relative", padding: "128px 24px 140px", textAlign: "center", borderTop: "1px solid #141A1B", overflow: "hidden" }}>
+      <section style={{ position: "relative", padding: "128px 24px 140px", textAlign: "center", borderTop: "1px solid #141418", overflow: "hidden" }}>
         {" "}
         <div className="mk-gridbg" style={{ position: "absolute", inset: "0", pointerEvents: "none" }}></div>
         {" "}
-        <div className="mk-aur mk-aur1" style={{ left: "50%", top: "-120px", marginLeft: "-380px", width: "760px", height: "520px", background: "rgba(67,229,160,.15)" }}></div>
+        <div className="mk-aur mk-aur1" style={{ left: "50%", top: "-120px", marginLeft: "-380px", width: "760px", height: "520px", background: "rgba(61,102,255,.15)" }}></div>
         {" "}
         <div style={{ position: "relative", maxWidth: "940px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "26px", alignItems: "center" }}>
           {" "}
@@ -1408,7 +1408,7 @@ export default function MarketingHome() {
             <span className="mk-wave"></span>
             <span className="mk-wave mk-wv2"></span>
             {" "}
-            <div className="mk-core" style={{ position: "absolute", inset: "0", borderRadius: "26px", background: "#0E1513", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "40px" }}>
+            <div className="mk-core" style={{ position: "absolute", inset: "0", borderRadius: "26px", background: "#0E1020", color: "#FFFFFF", display: "grid", placeItems: "center", fontWeight: "900", fontSize: "40px" }}>
 <EulivMark size={40} tone="bright" />
 </div>
             {" "}
@@ -1421,17 +1421,17 @@ export default function MarketingHome() {
             </span>
           </h2>
           {" "}
-          <p style={{ margin: "0", color: "#A3B0AC", fontSize: "19px", lineHeight: "1.55", maxWidth: "620px" }}>
+          <p style={{ margin: "0", color: "#A1A3AD", fontSize: "19px", lineHeight: "1.55", maxWidth: "620px" }}>
             {"Connect your first source in minutes. Your first answer — with its proof — arrives in seconds."}
           </p>
           {" "}
           <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", justifyContent: "center" }}>
             {" "}
-            <A href="/start" style={{ background: "#43E5A0", color: "#04140D", fontWeight: "700", fontSize: "17px", padding: "18px 32px", borderRadius: "999px", boxShadow: "0 18px 50px -18px rgba(67,229,160,.7)" }}>
+            <A href="/start" style={{ background: "#3D66FF", color: "#FFFFFF", fontWeight: "700", fontSize: "17px", padding: "18px 32px", borderRadius: "999px", boxShadow: "0 18px 50px -18px rgba(61,102,255,.7)" }}>
               {"Get early access"}
             </A>
             {" "}
-            <A href="#see" style={{ border: "1px solid #2A3436", color: "#E8EEEC", fontWeight: "500", fontSize: "17px", padding: "18px 30px", borderRadius: "999px" }}>
+            <A href="#see" style={{ border: "1px solid #2A2B33", color: "#EDEDEF", fontWeight: "500", fontSize: "17px", padding: "18px 30px", borderRadius: "999px" }}>
               {"See it work"}
             </A>
             {" "}
@@ -1441,7 +1441,7 @@ export default function MarketingHome() {
         {" "}
       </section>
       {" "}
-      <footer style={{ borderTop: "1px solid #141A1B", padding: "72px 24px 36px", background: "#050707" }}>
+      <footer style={{ borderTop: "1px solid #141418", padding: "72px 24px 36px", background: "#050506" }}>
         {" "}
         <div style={{ maxWidth: "1280px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "52px" }}>
           {" "}
@@ -1453,7 +1453,7 @@ export default function MarketingHome() {
                 <EulivMark size={32} tone="bright" /> <Wordmark size={21} tone="bright" />
               </div>
               {" "}
-              <p style={{ margin: "0", color: "#A3B0AC", fontSize: "15px", lineHeight: "1.6" }}>
+              <p style={{ margin: "0", color: "#A1A3AD", fontSize: "15px", lineHeight: "1.6" }}>
                 {"The AI analyst that shows its work. Every source, one answer — proven."}
               </p>
               {" "}
@@ -1462,55 +1462,55 @@ export default function MarketingHome() {
             <div className="mk-m-foot" style={{ display: "flex", flexWrap: "wrap", gap: "60px" }}>
               {" "}
               <div style={{ display: "flex", flexDirection: "column", gap: "11px", fontSize: "14.5px" }}>
-                <span className="mk-mono" style={{ fontSize: "11.5px", letterSpacing: "0.12em", color: "#7F8C88" }}>
+                <span className="mk-mono" style={{ fontSize: "11.5px", letterSpacing: "0.12em", color: "#8E909A" }}>
                   {"PRODUCT"}
                 </span>
-                <A href="#see" style={{ color: "#A3B0AC" }}>
+                <A href="#see" style={{ color: "#A1A3AD" }}>
                   {"How it works"}
                 </A>
-                <A href="#platform" style={{ color: "#A3B0AC" }}>
+                <A href="#platform" style={{ color: "#A1A3AD" }}>
                   {"Platform"}
                 </A>
-                <A href="#platform" style={{ color: "#A3B0AC" }}>
+                <A href="#platform" style={{ color: "#A1A3AD" }}>
                   {"ML Studio"}
                 </A>
-                <A href="#platform" style={{ color: "#A3B0AC" }}>
+                <A href="#platform" style={{ color: "#A1A3AD" }}>
                   {"Automations"}
                 </A>
               </div>
               {" "}
               <div style={{ display: "flex", flexDirection: "column", gap: "11px", fontSize: "14.5px" }}>
-                <span className="mk-mono" style={{ fontSize: "11.5px", letterSpacing: "0.12em", color: "#7F8C88" }}>
+                <span className="mk-mono" style={{ fontSize: "11.5px", letterSpacing: "0.12em", color: "#8E909A" }}>
                   {"COMPANY"}
                 </span>
-                <A href="/about" style={{ color: "#A3B0AC" }}>
+                <A href="/about" style={{ color: "#A1A3AD" }}>
                   {"About us"}
                 </A>
-                <A href="/about" style={{ color: "#A3B0AC" }}>
+                <A href="/about" style={{ color: "#A1A3AD" }}>
                   {"Investors"}
                 </A>
-                <A href="/about" style={{ color: "#A3B0AC" }}>
+                <A href="/about" style={{ color: "#A1A3AD" }}>
                   {"Careers"}
                 </A>
-                <A href="/about" style={{ color: "#A3B0AC" }}>
+                <A href="/about" style={{ color: "#A1A3AD" }}>
                   {"Contact"}
                 </A>
               </div>
               {" "}
               <div style={{ display: "flex", flexDirection: "column", gap: "11px", fontSize: "14.5px" }}>
-                <span className="mk-mono" style={{ fontSize: "11.5px", letterSpacing: "0.12em", color: "#7F8C88" }}>
+                <span className="mk-mono" style={{ fontSize: "11.5px", letterSpacing: "0.12em", color: "#8E909A" }}>
                   {"TRUST"}
                 </span>
-                <A href="#security" style={{ color: "#A3B0AC" }}>
+                <A href="#security" style={{ color: "#A1A3AD" }}>
                   {"Security"}
                 </A>
-                <A href="/privacy" style={{ color: "#A3B0AC" }}>
+                <A href="/privacy" style={{ color: "#A1A3AD" }}>
                   {"Privacy policy"}
                 </A>
-                <A href="/privacy" style={{ color: "#A3B0AC" }}>
+                <A href="/privacy" style={{ color: "#A1A3AD" }}>
                   {"Terms of service"}
                 </A>
-                <A href="/privacy" style={{ color: "#A3B0AC" }}>
+                <A href="/privacy" style={{ color: "#A1A3AD" }}>
                   {"Data processing"}
                 </A>
               </div>
@@ -1519,7 +1519,7 @@ export default function MarketingHome() {
             {" "}
           </div>
           {" "}
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "16px", justifyContent: "space-between", borderTop: "1px solid #141A1B", paddingTop: "24px", fontSize: "13.5px", color: "#7F8C88" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "16px", justifyContent: "space-between", borderTop: "1px solid #141418", paddingTop: "24px", fontSize: "13.5px", color: "#8E909A" }}>
             {" "}
             <span>
               {"© 2026 Euliv. All rights reserved."}
@@ -1539,13 +1539,13 @@ export default function MarketingHome() {
       {" "}
       <div className="mk-m-only">
         {" "}
-        <div style={{ position: "fixed", left: "0", right: "0", bottom: "0", zIndex: "40", padding: "10px 16px calc(10px + env(safe-area-inset-bottom, 0px))", background: "rgba(7,9,10,.9)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", borderTop: "1px solid #1F2729", display: "flex", alignItems: "center", gap: "10px" }}>
+        <div style={{ position: "fixed", left: "0", right: "0", bottom: "0", zIndex: "40", padding: "10px 16px calc(10px + env(safe-area-inset-bottom, 0px))", background: "rgba(10,10,11,.9)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", borderTop: "1px solid #1E1F24", display: "flex", alignItems: "center", gap: "10px" }}>
           {" "}
-          <A href="#see" style={{ flex: "1", height: "50px", border: "1px solid #2A3436", borderRadius: "999px", display: "grid", placeItems: "center", color: "#E8EEEC", fontWeight: "600", fontSize: "15px" }}>
+          <A href="#see" style={{ flex: "1", height: "50px", border: "1px solid #2A2B33", borderRadius: "999px", display: "grid", placeItems: "center", color: "#EDEDEF", fontWeight: "600", fontSize: "15px" }}>
             {"See it work"}
           </A>
           {" "}
-          <A href="/start" style={{ flex: "1.5", height: "50px", borderRadius: "999px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "700", fontSize: "15.5px", boxShadow: "0 12px 34px -14px rgba(67,229,160,.8)" }}>
+          <A href="/start" style={{ flex: "1.5", height: "50px", borderRadius: "999px", background: "#3D66FF", color: "#FFFFFF", display: "grid", placeItems: "center", fontWeight: "700", fontSize: "15.5px", boxShadow: "0 12px 34px -14px rgba(61,102,255,.8)" }}>
             {"Get early access"}
           </A>
           {" "}
