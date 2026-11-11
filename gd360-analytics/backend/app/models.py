@@ -903,6 +903,8 @@ class Dashboard(Base):
     # 2026-10-15 (R49): layout_version 4 = a designed board (services/agent/board.py): the spec of its pages,
     # blocks, filters, theme and definitions, computed live on its data source by GET /v2/boards/{id}/run.
     board_spec = Column(JSON, nullable=True)
+    # 2026-11-11 (R67): a small JPEG of the dashboard as it last looked, drawn by the browser that opened it
+    thumbnail = Column(Text, nullable=True)
 
     owner = relationship("User", back_populates="dashboards")
     charts = relationship("SavedChart", back_populates="dashboard", cascade="all, delete-orphan")

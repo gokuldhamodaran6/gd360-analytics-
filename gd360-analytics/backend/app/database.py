@@ -47,6 +47,8 @@ _NEW_COLUMNS = [
     ("conversations", "trashed_at", "TIMESTAMP"),
     ("conversations", "trashed_by", "TEXT"),
     ("dashboards", "trashed_at", "TIMESTAMP"),
+    # 2026-11-11 (R67): a real picture of the dashboard for its card on the Dashboards list (a small JPEG data URL)
+    ("dashboards", "thumbnail", "TEXT"),
     ("dashboards", "trashed_by", "TEXT"),
     ("ml_models", "trashed_at", "TIMESTAMP"),
     ("ml_models", "trashed_by", "TEXT"),

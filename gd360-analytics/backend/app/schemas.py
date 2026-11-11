@@ -662,6 +662,8 @@ class DashboardOut(BaseModel):
     refresh_interval: str = "off"
     # 2026-10-15 (R50): a designed board (layout_version 4) - its theme and pages, for a thumbnail in its own colours
     board: Optional[dict] = None
+    # 2026-11-11 (R67): a real picture of the dashboard (small JPEG data URL) - drawn by the browser that last opened it
+    thumbnail: Optional[str] = None
 
 
 class SavedChartOut(BaseModel):
@@ -1103,6 +1105,9 @@ class PublicDashboardOut(BaseModel):
     # owner's payload carries (DashboardBuilderOut.appearance), so an
     # anonymous viewer sees the same colours, type and number formats.
     appearance: Optional[dict] = None
+    # 2026-11-11 (R67): a designed dashboard (layout_version 4) published as a link - its pages, theme and filters;
+    # the viewer computes each page through /public/dashboards/{slug}/board/run
+    board: Optional[dict] = None
 
 
 class SetCustomDomainRequest(BaseModel):
