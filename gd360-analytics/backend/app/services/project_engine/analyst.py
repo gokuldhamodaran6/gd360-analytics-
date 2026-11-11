@@ -481,8 +481,10 @@ result = {{
   "tables": [{{"title": "Every option, side by side", "df": options_df}}, ...],  # 1-4 tables, main table first,
                                   # readable column names ("Baristas", "Total wait (min)", "Daily cost ($)"), max 200 rows
   "checks": [{{"label": "1 barista reproduces the sheet's total wait", "expected": 843, "got": 843.0}}],
-  "chart": {{"table": 0, "type": "bar|line|area|scatter|histogram", "x": "Baristas", "y": ["Daily cost ($)"],
-            "title": "Daily cost by number of baristas"}},      # or None when a chart adds nothing
+  "chart": {{"table": 0, "type": "bar|line|area|scatter|histogram|map", "x": "Baristas", "y": ["Daily cost ($)"],
+            "title": "Daily cost by number of baristas"}},      # or None when a chart adds nothing; "map" draws the
+                                  # table on a live street map: give it latitude/longitude columns (two pairs = routes)
+                                  # or a city column, plus one measure for bubble size
   "model": None or {{                                            # live what-if: optional, include it for scenario /
       "inputs": [{{"key": "wait_cost", "label": "Cost of a waiting minute", "value": 1.0, "min": 0, "max": 5,
                   "step": 0.05, "unit": "$"}}],                   # cost / rate questions so the person can move rates
@@ -947,6 +949,11 @@ def _visual(res: dict) -> list[dict]:
     except (IndexError, TypeError, ValueError):
         return []
     names = [c["name"] for c in t["columns"]]
+    # 2026-11-11 (live maps): a map of the table's own rows - latitude/longitude columns, or a city / place column;
+    # the frontend's live street map (charts/LiveMapCanvas.tsx) finds them and looks place names up itself
+    if str(ch.get("type")) in ("map", "live_map", "street_map"):
+        payload = table_payload(pd.DataFrame(t["rows"])[names], limit=5000)
+        return [{"type": "chart", "title": str(ch.get("title") or t["title"])[:90], "chart_type": "live_map", "tables": ["analyst"], **payload}]
     x = ch.get("x")
     ys = [y for y in (ch.get("y") or []) if y in names][:4] if isinstance(ch.get("y"), list) else ([ch.get("y")] if ch.get("y") in names else [])
     if x not in names or not ys:
