@@ -189,7 +189,7 @@ export const catalogApi = {
   status: (id: string) => api.get<ConnectedApp>(`/apps/${id}`).then((r) => r.data),
 };
 
-export const SPACE_COLORS = ["#C9A7FF", "#43E5A0", "#F2B84B", "#FF8FA3", "#7AA7FF", "#5CF2E6"];
+export const SPACE_COLORS = ["#C9A7FF", "#3D66FF", "#F2B84B", "#FF8FA3", "#7AA7FF", "#5CF2E6"];
 
 /** The monogram tile colours for a source kind already connected (the
  *  catalog carries the full list; this covers the ones lists show). */
@@ -212,17 +212,17 @@ export const KIND_TILE: Record<string, { m: string; c: string; t: string }> = {
   mysql: { m: "My", c: "#00758F", t: "#FFFFFF" },
   sqlserver: { m: "SQ", c: "#B52E31", t: "#FFFFFF" },
   mongodb: { m: "Mg", c: "#0F8B4C", t: "#FFFFFF" },
-  supabase: { m: "Sb", c: "#2FBF7E", t: "#0B0F10" },
+  supabase: { m: "Sb", c: "#2FBF7E", t: "#0C0C0E" },
   bigquery: { m: "BQ", c: "#3B78E7", t: "#FFFFFF" },
   snowflake: { m: "Sf", c: "#1EA7D9", t: "#FFFFFF" },
-  csv: { m: "Fi", c: "#1C2A25", t: "#43E5A0" },
+  csv: { m: "Fi", c: "#1C2A25", t: "#3D66FF" },
   excel: { m: "Xl", c: "#1D6F42", t: "#FFFFFF" },
   google_sheets: { m: "GS", c: "#1E8E3E", t: "#FFFFFF" },
   microsoft_excel: { m: "Xl", c: "#1D6F42", t: "#FFFFFF" },
-  api: { m: "{}", c: "#151C1D", t: "#43E5A0" },
+  api: { m: "{}", c: "#151C1D", t: "#3D66FF" },
   streaming: { m: "Wh", c: "#151C1D", t: "#9DB4FF" },
 };
 
 export function kindTile(kind: string, name?: string): { m: string; c: string; t: string } {
-  return KIND_TILE[kind] || { m: (name || kind || "?").replace(/[^A-Za-z0-9]/g, "").slice(0, 2) || "?", c: "#1A2224", t: "#C9D3D0" };
+  return KIND_TILE[kind] || { m: (name || kind || "?").replace(/[^A-Za-z0-9]/g, "").slice(0, 2) || "?", c: "#1A1B20", t: "#C9D3D0" };
 }
