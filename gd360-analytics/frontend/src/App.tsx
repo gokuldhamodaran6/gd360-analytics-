@@ -1,4 +1,6 @@
 import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
+import { useEffect } from "react";
+import { runSnapMode, snapTarget } from "./lib/snapshot";
 import { useAuth } from "./api/AuthContext";
 import Login from "./pages/Login";
 import AdminLogin from "./pages/AdminLogin";
@@ -107,6 +109,13 @@ function isRecognizedHost(hostname: string): boolean {
   return false;
 }
 
+/** R68: a dashboard opened with ?snap=1 (by the Dashboards list, in a hidden frame) draws itself, then saves a
+ *  picture of itself for its card. Renders nothing. */
+function SnapMode() {
+  useEffect(() => { const id = snapTarget(); if (id) void runSnapMode(id); }, []);
+  return null;
+}
+
 export default function App() {
   // 2026-10-07: one boundary around every page, reset on navigation, so a
   // render error shows a notice instead of a blank screen (see
@@ -124,6 +133,7 @@ export default function App() {
           routes above (Login/Register/Landing/etc.), so nothing below
           needs to know it exists. Opened by Cmd+K/Ctrl+K anywhere, or by
           the search button every authenticated page's TopNav now shows. */}
+      <SnapMode />
       <CommandPalette />
       {/* 2026-10-10: Mission Control announcements + the Help button (signed-in app pages only). */}
       <InAppMessages />
