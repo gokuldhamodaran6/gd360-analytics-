@@ -355,6 +355,48 @@ function DashboardCard({
   );
 }
 
+/** R68: every card shows the dashboard itself. A dashboard with no picture yet (made before pictures, or never
+ *  opened since) is opened here in a hidden frame, one at a time; it draws, saves a picture of its first page and
+ *  tells this list, so the card swaps the drawn preview for the real one. Only dashboards this person can edit. */
+function ThumbnailFiller({ items, onImage }: { items: DashboardSummary[]; onImage: (id: string, image: string | null) => void }) {
+  // fixed when the list first loads - a card getting its picture must not reshuffle the queue
+  const [queue] = useState<string[]>(() => {
+    let tried: string[] = [];
+    try { tried = JSON.parse(sessionStorage.getItem("euliv_thumb_tried") || "[]"); } catch { /* private window */ }
+    return items.filter((d) => !d.thumbnail && d.can_edit && !tried.includes(d.id)).map((d) => d.id);
+  });
+  const [i, setI] = useState(0);
+  const current = queue[i];
+  useEffect(() => {
+    if (!current) return;
+    const markTried = () => {
+      try {
+        const t: string[] = JSON.parse(sessionStorage.getItem("euliv_thumb_tried") || "[]");
+        sessionStorage.setItem("euliv_thumb_tried", JSON.stringify([...t, current].slice(-200)));
+      } catch { /* private window */ }
+    };
+    const onMsg = (e: MessageEvent) => {
+      if (e.origin !== window.location.origin || e.data?.type !== "euliv-thumb" || e.data?.id !== current) return;
+      markTried();
+      onImage(current, e.data.image || null);
+      setI((x) => x + 1);
+    };
+    window.addEventListener("message", onMsg);
+    const t = window.setTimeout(() => { markTried(); setI((x) => x + 1); }, 40000);
+    return () => { window.removeEventListener("message", onMsg); window.clearTimeout(t); };
+  }, [current]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!current) return null;
+  const d = items.find((x) => x.id === current);
+  if (!d) return null;
+  return (
+    <>
+      <iframe key={current} title="Drawing a preview" aria-hidden="true" tabIndex={-1} src={`${dashboardHref(d)}?snap=1`}
+        style={{ position: "fixed", left: -12000, top: 0, width: 1440, height: 900, border: 0, opacity: 0, pointerEvents: "none" }} data-thumb-filler={current} />
+      <span className="text-caption text-muted" role="status" data-thumb-progress="">Drawing previews · {Math.min(i + 1, queue.length)} of {queue.length}</span>
+    </>
+  );
+}
+
 export default function Dashboards() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -438,6 +480,7 @@ export default function Dashboards() {
             actions={<button type="button" onClick={() => { setNewStart("data"); setNewPicked([]); setNewOpen(true); }} className="sd-btnp" data-new-dashboard="">New dashboard</button>} />
 
           {error && <div role="alert" className="rounded-ctl border border-danger-border bg-danger-fill px-3 py-2.5 text-ui text-text">{error}</div>}
+          {dashboards && <ThumbnailFiller items={dashboards} onImage={(id, image) => { if (image) setDashboards((ds) => (ds || []).map((x) => (x.id === id ? { ...x, thumbnail: image } : x))); }} />}
 
           <section aria-label="Your dashboards" className="flex flex-col gap-3.5">
             <div className="flex items-center justify-between gap-3 flex-wrap">

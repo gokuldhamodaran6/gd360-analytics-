@@ -7,6 +7,7 @@ import { DataFreshnessBadge } from "../components/DashboardBlocks";
 import { DashboardShell, useDashboardRun, useDashboardViewMode, type RunSource } from "../dashboard";
 import { brandingBackgroundImageStyle, brandingStyleVars } from "../lib/branding";
 import { BoardView } from "../board/BoardView";
+import { EulivLogo } from "../components/Brand";
 
 // 2026-09-24 (Dashboard Builder Phase 1 + Phase 3): the anonymous, no-login
 // viewer a published dashboard's public OR private link actually opens -
@@ -278,7 +279,7 @@ export default function PublicDashboardView() {
   return (
     <div className="dash-shell min-h-screen bg-base text-text" style={shellStyle}>
       <div className="sticky top-0 z-20 backdrop-blur-md bg-base/80 border-b border-border">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
+        <div className={dash ? "w-full px-4 sm:px-7 py-3.5 flex items-center justify-between gap-3" : "max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between"} data-public-header="">
           {byHostname ? (
             // White-label: never show the GD360 wordmark on a customer's
             // own domain - see this file's own module docstring. The
@@ -288,8 +289,8 @@ export default function PublicDashboardView() {
           ) : (
             <div className="flex items-center gap-2.5">
               {logoUrl && <img src={logoUrl} alt="" className="h-7 w-auto max-w-[140px] object-contain" />}
-              <Link to="/" className="font-bold text-lg tracking-tight">
-                Euliv <span className="text-primary">Analytics</span>
+              <Link to="/" className="inline-flex items-center" aria-label="Euliv">
+                <EulivLogo size={26} />
               </Link>
             </div>
           )}
@@ -334,7 +335,7 @@ export default function PublicDashboardView() {
                 with the viewer token - no owner-only actions, comments
                 hidden. See PublicDashboardBody below. */}
             {dash.board ? (
-              <div className="max-w-[1400px] mx-auto px-2 sm:px-4" data-public-board="">
+              <div className="w-full px-2 sm:px-4" data-public-board="">
                 <BoardView id="public" summary={dash.board} publicView
                   runFn={(pageId, filters) => publicDashboardApi.runBoard(resolverKey, byHostname, { page_id: pageId, filters }, viewerToken)} />
               </div>
